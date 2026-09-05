@@ -103,6 +103,11 @@ function mockUpstream(script = {}) {
     }
     calls.responses.push({ token, path });
     const answer = script.responses ? script.responses(calls.responses.length, token) : { status: 200 };
+    if (answer.status === 401) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
+      return;
+    }
     if (answer.status === 429) {
       res.writeHead(429, {
         'content-type': 'application/json',
@@ -457,6 +462,52 @@ test('status surfaces the credit ledger through the quota snapshot', async () =>
     const exported = am.exportQuotaState()[0].quota;
     assert.equal(exported.codexResetCredits, 2, 'the ledger rides on the persisted quota snapshot');
     assert.equal(exported.codexResetCreditLastOutcome, 'reset');
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream)]);
+  }
+});
+
+// Cross-mechanism guard (merge of the reset-credit line into the 401 cascade
+// line, adversarial review 2026-09-06). A reset credit is a limited, real
+// resource the operator owns. A request-scoped 401 cascade must never be
+// mistaken for quota exhaustion and charged one: the fleet here has credits and
+// is nowhere near its quota — every account simply rejects THIS request's auth.
+// Static tracing said three separate gates prevent it; this asserts it.
+test('a 401 cascade never spends a reset credit on a quota-healthy fleet', async () => {
+  const { server: upstream, calls } = mockUpstream({ responses: () => ({ status: 401 }) });
+  let proxy;
+  try {
+    const upstreamPort = await listen(upstream);
+    // No refresh tokens: a 401 must not send this test to the real OpenAI token
+    // endpoint. The cascade's parking decision is what matters here.
+    const am = new AccountManager(makeCodexAccounts(3, { refreshToken: null }), 0.98);
+    // Credits on hand, quota healthy — the only thing wrong is the request.
+    am.accounts.forEach(a => {
+      a.quota.unified7d = 0.1;
+      a.quota.unified5h = 0.1;
+      a.quota.codexResetCredits = 3;
+    });
+    proxy = startProxy(am, upstreamPort, {
+      codexResetCredits: true, // the controller must be ARMED, or this proves nothing
+      continuityMaxWaitMs: 1500,
+      continuityMaxSleepMs: 50,
+    });
+    const proxyPort = await listen(proxy);
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/codex/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6', input: [] }),
+    });
+    await response.text();
+
+    assert.equal(calls.consume.length, 0,
+      `a 401 cascade must not redeem a reset credit, saw ${calls.consume.length}`);
+    assert.equal(response.status, 401, 'the request surfaces its 401');
+    assert.deepEqual(am.accounts.filter(a => a.status === 'error').map(a => a.name), [],
+      'and the cascade guard still keeps the fleet in rotation');
+    assert.ok(am.accounts.every(a => (a.quota.codexResetCreditsConsumed || 0) === 0),
+      'no account may show a consumed credit');
   } finally {
     await Promise.all([closeServer(proxy), closeServer(upstream)]);
   }
