@@ -1,5 +1,6 @@
 import { refreshAccessToken, isTokenExpiringSoon, normalizeExpiresAt } from './oauth.js';
 import { refreshCodexAccessToken } from './codex.js';
+import { parseCodexResetCreditsAvailable, withinCodexResetCreditGrace } from './codex-reset-credits.js';
 import {
   cancellationIsDue,
   normalizeSubscriptionCancellation,
@@ -99,6 +100,17 @@ function emptyQuota() {
     // they are a non-authoritative signal. Drives the active fast-lane refresh
     // (server.js maybeRefreshCodexUsage) and surfaces data age in status.
     codexUsageAt: null,
+    // Codex rate-limit reset credits ("Full reset" grants): cached
+    // available_count from the last wham/usage apply (null = unknown), its
+    // stamp, and the redemption ledger the automatic policy keys off
+    // (src/codex-reset-credits.js). Persisted with the quota snapshot so a
+    // restart keeps the cooldown.
+    codexResetCredits: null,            // integer ≥ 0 | null
+    codexResetCreditsAt: null,          // ms timestamp of the count above
+    codexResetCreditLastAt: null,       // ms timestamp of the last redemption attempt
+    codexResetCreditLastOutcome: null,  // pending (consume POST in flight / died mid-flight — fail-closed until a poll re-reads the count) | reset | reset_no_windows | nothing_to_reset | no_credit | already_redeemed | http_<n> | timeout | error
+    codexResetCreditsConsumed: 0,       // credits spent (reset or reset_no_windows) this snapshot lineage
+    codexResetCreditResetAt: null,      // ms timestamp of the last EFFECTIVE reset (grace window + stale-response fence)
     // Model-scoped weekly windows, keyed by header window label — e.g. `7d_oi`,
     // the separate weekly limit for the top model tier shown as "Fable" in
     // Claude's usage UI. Parsed generically from
@@ -1245,6 +1257,10 @@ export class AccountManager {
     // carries no recognizable 5h/7d window (an upstream contract change must
     // not turn the active fast lane into an unbounded per-request poll).
     account.quota.codexUsageAt = Date.now();
+    // Reset-credit count rides on the same payload. Absent/invalid → null so
+    // the automatic redemption stays off until the backend reports a count.
+    account.quota.codexResetCredits = parseCodexResetCreditsAvailable(payload);
+    account.quota.codexResetCreditsAt = account.quota.codexUsageAt;
 
     const limits = [];
     if (payload.rate_limit && typeof payload.rate_limit === 'object') {
@@ -1271,11 +1287,29 @@ export class AccountManager {
     }
 
     let applied = false;
+    let heldByGrace = false;
+    const inResetGrace = withinCodexResetCreditGrace(account.quota);
     for (const [kind, window] of windows) {
       const resetAt = window.reset_at ?? (window.reset_after_seconds != null
         && Number.isFinite(Number(window.reset_after_seconds))
         ? Date.now() / 1000 + Number(window.reset_after_seconds)
         : null);
+      // Right after a reset credit the backend meter can lag for a few
+      // seconds and still report the pre-reset 100%. Inside the grace window
+      // an authoritative payload may lower or keep the meter but not RAISE
+      // it: a reset that genuinely failed still surfaces as a post-reset 429
+      // on the request path, which throttles the account as usual. A window
+      // held back here was still RECOGNIZED — the poll succeeded, so callers
+      // must not classify it as a failed refresh.
+      if (inResetGrace) {
+        const utilKey = kind === '5h' ? 'unified5h' : 'unified7d';
+        const stored = account.quota[utilKey];
+        const incoming = Number(window.used_percent);
+        if (Number.isFinite(incoming) && typeof stored === 'number' && incoming / 100 > stored) {
+          heldByGrace = true;
+          continue;
+        }
+      }
       applied = applyCodexQuotaWindow(
         account.quota,
         kind,
@@ -1283,7 +1317,7 @@ export class AccountManager {
         resetAt,
       ) || applied;
     }
-    return applied;
+    return applied || heldByGrace;
   }
 
   /**
