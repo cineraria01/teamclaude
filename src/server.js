@@ -27,6 +27,16 @@ import {
 } from './byok.js';
 import { normalizeContinuityMaxWaitMs } from './config.js';
 import {
+  applyCodexResetCreditOutcome,
+  codexResetCreditEligibility,
+  codexResetCreditOutcomeKind,
+  consumeCodexResetCredit,
+  describeCodexResetCreditCandidates,
+  normalizeCodexResetCreditsConfig,
+  rankCodexResetCreditCandidates,
+  withinCodexResetCreditGrace,
+} from './codex-reset-credits.js';
+import {
   CODEX_INVOCATION_HEADER,
   CODEX_RECOVERY_SESSION_HEADER,
   codexRecoveryIdentity,
@@ -373,6 +383,10 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   const codexUsageActiveMs = Number.isFinite(config.codexUsageActiveMs)
     ? Math.max(0, config.codexUsageActiveMs)
     : 60_000;
+  // Reset credits (codex): automatic redemption policy. `enabled` gates only
+  // the automatic triggers; the local operator endpoint always works in codex
+  // mode. See src/codex-reset-credits.js + docs/specs/2026-09-05-codex-reset-credits.md.
+  const resetCredits = normalizeCodexResetCreditsConfig(config, provider);
   // Auto-quarantine (codex): consecutive terminal (401/403) auth failures on
   // the wham/usage poll before the proxy escalates to a forced token refresh
   // plus a confirm re-poll. In-memory streak; the poll cadence is the pacing.
@@ -655,6 +669,164 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       .catch(() => { /* refreshCodexAccount is already best-effort */ })
       .finally(() => { account._usageRefreshing = false; });
   }
+
+  // Codex reset credits. One redemption attempt per account at a time; the
+  // outcome is folded into the account at once (a "reset" makes it routable
+  // again immediately) and an authoritative wham/usage refresh follows shortly
+  // after so the meter reflects the backend's view. Best-effort throughout —
+  // a failure here never breaks the request path, it just falls through to the
+  // existing exhaustion handling.
+  const RESET_CREDIT_REFRESH_DELAY_MS = 1500;
+  const RESET_CREDIT_NO_CANDIDATE_LOG_MS = 60_000;
+  let resetCreditNoCandidateLoggedAt = 0;
+  const NO_RESET = Object.freeze({ reset: false, kind: 'no-spend', outcome: null });
+
+  function resetCreditEligibilityOptions(model = null) {
+    return {
+      reserve: resetCredits.reserve,
+      cooldownMs: resetCredits.cooldownMs,
+      isExhausted: candidate => accountManager.isExhausted(candidate),
+      // A reset on an account quarantined for the requested model restores
+      // quota nobody can use for this request.
+      canServe: candidate => !accountManager._isModelUnsupported(candidate, model),
+    };
+  }
+
+  function scheduleResetCreditUsageRefresh(account) {
+    if (!codexUsageRefresh || warmupClosed) return;
+    const timer = setTimeout(() => {
+      if (warmupClosed || accountManager.accounts[account.index] !== account) return;
+      refreshCodexAccount(account).catch(() => { /* best-effort */ });
+    }, RESET_CREDIT_REFRESH_DELAY_MS);
+    timer.unref?.();
+  }
+
+  // One redemption attempt on one account. Returns { reset, kind, outcome }:
+  // `reset` = routable again; `kind` classifies the attempt for the fleet walk
+  // (see codexResetCreditOutcomeKind). `enforceEligibility` applies the
+  // automatic-policy guards (credits known/reserve/cooldown/exhausted/can
+  // serve); the operator endpoint passes false. Single-flight per account.
+  async function redeemCodexResetCredit(account, reason, { enforceEligibility = true, model = null } = {}) {
+    if (provider !== 'codex' || !account || account.provider !== 'codex') return NO_RESET;
+    if (enforceEligibility) {
+      const verdict = codexResetCreditEligibility(account, resetCreditEligibilityOptions(model));
+      if (!verdict.eligible) return NO_RESET;
+    }
+    if (account._resetCreditPromise) return account._resetCreditPromise;
+    account._resetCreditPromise = (async () => {
+      try {
+        // ensureTokenFresh never throws — a failed refresh only logs and may
+        // park the account — so judge the result, not an exception.
+        await accountManager.ensureTokenFresh(account);
+        if (accountManager.accounts[account.index] !== account) return NO_RESET;
+        if (!account.credential || account.status === 'error' || account.authRevoked === true
+            || isTokenExpiringSoon(account.expiresAt)) {
+          const outcome = { ok: false, code: 'token_refresh_failed', windowsReset: null, status: null, error: null };
+          applyCodexResetCreditOutcome(account, outcome);
+          console.error(`[TeamCodex] Reset credit on "${account.name}" (${reason}) skipped — credential unusable (status ${account.status})`);
+          return { reset: false, kind: 'no-spend', outcome };
+        }
+        // Durable intent BEFORE the POST: stamp the cooldown as "pending" and
+        // ask the host to persist the quota snapshot now. If the process dies
+        // after the backend consumed the credit but before the outcome lands,
+        // a restart still sees the cooldown (and the poll reconciles the
+        // count) instead of redeeming this account a second time.
+        account.quota.codexResetCreditLastAt = Date.now();
+        account.quota.codexResetCreditLastOutcome = 'pending';
+        hooks.onResetCreditLedger?.(account);
+        const outcome = await consumeCodexResetCredit({
+          account,
+          upstream,
+          timeoutMs: resetCredits.timeoutMs,
+        });
+        const reset = applyCodexResetCreditOutcome(account, outcome);
+        const kind = codexResetCreditOutcomeKind(outcome);
+        // …and persist the real outcome right away (the periodic snapshot is
+        // 60 s apart and the exit handler does not run on SIGKILL).
+        hooks.onResetCreditLedger?.(account);
+        if (reset) {
+          console.log(`[TeamCodex] Reset credit redeemed on "${account.name}" (${reason}): windows_reset=${outcome.windowsReset ?? '?'}, credits left=${account.quota.codexResetCredits ?? '?'}`);
+        } else if (kind === 'spent-no-reset') {
+          console.error(`[TeamCodex] Reset credit SPENT on "${account.name}" (${reason}) but the backend reset no windows (windows_reset=0); credits left=${account.quota.codexResetCredits ?? '?'}`);
+        } else if (kind === 'indeterminate') {
+          console.error(`[TeamCodex] Reset credit on "${account.name}" (${reason}) indeterminate: ${outcome.code}${outcome.error ? ` — ${outcome.error}` : ''}; refreshing usage, not trying other accounts this pass`);
+        } else {
+          console.log(`[TeamCodex] Reset credit NOT applied on "${account.name}" (${reason}): ${outcome.code}${outcome.error ? ` — ${outcome.error}` : ''}`);
+        }
+        // Re-read the authoritative meter after ANY attempt: a reset must be
+        // confirmed, and an indeterminate/unexpected answer may have changed
+        // the backend state without telling us.
+        scheduleResetCreditUsageRefresh(account);
+        return { reset, kind, outcome };
+      } finally {
+        account._resetCreditPromise = null;
+      }
+    })();
+    return account._resetCreditPromise;
+  }
+
+  // Fleet-level automatic redemption: walk the eligible exhausted accounts
+  // (most credits first). Stops at the first reset, and ALSO after any
+  // attempt that may have spent a credit (spent-no-reset / indeterminate) —
+  // moving on to the next account after those is the double-spend path.
+  // Returns true when at least one account is routable again.
+  // Returns { redeemed, chargePass }: `chargePass` is true when at least one
+  // attempt may have spent a credit (reset / spent-no-reset / indeterminate),
+  // so the caller charges the request's single pass only for spend-capable
+  // work — a walk with no eligible candidate leaves the pass unspent.
+  async function redeemCodexResetCreditForFleet(accounts, reason, model = null, resolved = null) {
+    const nothing = { redeemed: false, chargePass: false };
+    if (!resetCredits.enabled || warmupClosed) return nothing;
+    // "Has the dead end been resolved by someone else?" — judged with the
+    // CALLER's request scope (credential-type exclusions etc.), never with a
+    // pool-wide view that could see an account this request cannot use.
+    const deadEndResolved = typeof resolved === 'function'
+      ? resolved
+      : () => accountManager.anyUsable(null, model) || accountManager.anyCapped(null, model);
+    const options = resetCreditEligibilityOptions(model);
+    const candidates = rankCodexResetCreditCandidates(accounts, options);
+    if (candidates.length === 0) {
+      const now = Date.now();
+      if (now - resetCreditNoCandidateLoggedAt >= RESET_CREDIT_NO_CANDIDATE_LOG_MS) {
+        resetCreditNoCandidateLoggedAt = now;
+        console.log(`[TeamCodex] Reset credit: no eligible account at the quota dead end (${describeCodexResetCreditCandidates(accounts, options).join(', ') || 'no codex accounts'})`);
+      }
+      return nothing;
+    }
+    // A walk that never reached the backend (every candidate re-judged as
+    // ineligible) leaves the pass unspent; one that made ANY real attempt —
+    // even a definite no-spend answer — charges it, so a request cannot
+    // re-POST consume on every wait-loop iteration (cooldown 0 has no other
+    // brake). The local NO_RESET sentinel is the "no attempt" marker.
+    let attempted = false;
+    for (const candidate of candidates) {
+      // Re-judge right before acting: another request or the operator
+      // endpoint may have redeemed (or exhausted the credits of) this
+      // candidate while an earlier candidate's consume was in flight.
+      const result = await redeemCodexResetCredit(candidate, reason, { enforceEligibility: true, model });
+      if (result !== NO_RESET) attempted = true;
+      if (result.reset) return { redeemed: true, chargePass: true };
+      if (result.kind !== 'no-spend') return { redeemed: false, chargePass: true };
+      // The dead end may have been resolved by someone else (operator reset,
+      // another request's pass, a window rollover) while this attempt was in
+      // flight: yield to the routable account instead of spending on the next.
+      if (deadEndResolved()) return { redeemed: true, chargePass: attempted };
+    }
+    return { redeemed: false, chargePass: attempted };
+  }
+
+  // Handed to forwardRequest through ctx: null when automatic redemption is
+  // off, so the request path stays byte-identical to the pre-feature behavior.
+  const resetCreditController = resetCredits.enabled
+    ? {
+        policy: resetCredits.policy,
+        fleet: redeemCodexResetCreditForFleet,
+        // Returns the full { reset, kind } so the 429 branch can charge the
+        // request's single pass for ANY outcome that may have spent a credit.
+        account: (account, reason, model = null) =>
+          redeemCodexResetCredit(account, reason, { enforceEligibility: true, model }),
+      }
+    : null;
 
   // Probe one account: send a minimal /v1/messages with its own auth and fold the
   // rate-limit headers into its quota. Best-effort and side-effect-light:
@@ -1058,6 +1230,10 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         }
         req.url = byokMatch.path;
       }
+      // Operator trigger for a Codex reset credit. Same trust boundary as
+      // rotation: loopback only, proxy API key when one is configured, body-free.
+      const isResetCreditRequest = provider === 'codex'
+        && req.url.split('?', 1)[0] === '/teamclaude/codex/reset-credit';
       if (hasRecoveryMarker && recoveryAccountUuid == null) {
         rejectEarlyRequest(req, res, 403, { 'Content-Type': 'application/json' }, {
           type: 'error',
@@ -1079,7 +1255,14 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         });
         return;
       }
-      if (isRotateRequest && proxyApiKey
+      if (isResetCreditRequest && !isLocal) {
+        rejectEarlyRequest(req, res, 403, { 'Content-Type': 'application/json' }, {
+          type: 'error',
+          error: { type: 'permission_error', message: 'Reset credit redemption is local-only.' },
+        });
+        return;
+      }
+      if ((isRotateRequest || isResetCreditRequest) && proxyApiKey
           && clientKey !== proxyApiKey && bearerKey !== proxyApiKey) {
         rejectEarlyRequest(req, res, 401, { 'Content-Type': 'application/json' }, {
           type: 'error',
@@ -1136,6 +1319,58 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         return;
       }
 
+      if (isResetCreditRequest) {
+        if (req.method !== 'POST') {
+          rejectEarlyRequest(
+            req,
+            res,
+            405,
+            { 'Content-Type': 'application/json', Allow: 'POST' },
+            {
+              type: 'error',
+              error: { type: 'invalid_request_error', message: 'Reset credit redemption requires POST.' },
+            },
+          );
+          return;
+        }
+        const contentLength = req.headers['content-length'];
+        const bodyFree = (contentLength == null || contentLength === '0')
+          && req.headers['transfer-encoding'] == null;
+        if (!bodyFree) {
+          rejectEarlyRequest(req, res, 400, { 'Content-Type': 'application/json' }, {
+            type: 'error',
+            error: { type: 'invalid_request_error', message: 'Reset credit redemption does not accept a body; pass ?account=<name>.' },
+          });
+          return;
+        }
+        const requestedName = new URL(req.url, 'http://localhost').searchParams.get('account');
+        const target = typeof requestedName === 'string' && requestedName.length > 0
+          ? accountManager.accounts.find(candidate => candidate.provider === 'codex' && candidate.name === requestedName)
+          : null;
+        if (!target) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            type: 'error',
+            error: { type: 'not_found_error', message: 'Unknown Codex account; pass ?account=<name>.' },
+          }));
+          return;
+        }
+        // Explicit operator intent bypasses the automatic policy/eligibility
+        // (cooldown, reserve, exhaustion) but keeps the single-flight guard.
+        const { reset } = await redeemCodexResetCredit(target, 'operator', { enforceEligibility: false });
+        const quota = target.quota || {};
+        res.writeHead(reset ? 200 : 409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          account: target.name,
+          reset,
+          outcome: quota.codexResetCreditLastOutcome ?? null,
+          resetCredits: quota.codexResetCredits ?? null,
+          unified5h: quota.unified5h ?? null,
+          unified7d: quota.unified7d ?? null,
+        }));
+        return;
+      }
+
       const isStatusRequest = req.method === 'GET' && req.url === '/teamclaude/status';
       const contentLength = req.headers['content-length'];
       const bodyFreeStatus = isStatusRequest
@@ -1154,6 +1389,16 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         res.end(JSON.stringify({
           ...accountManager.getStatus({ includeIdentity }),
           host: hostTracker.sample(),
+          ...(provider === 'codex'
+            ? {
+                resetCredits: {
+                  enabled: resetCredits.enabled,
+                  policy: resetCredits.policy,
+                  cooldownMs: resetCredits.cooldownMs,
+                  reserve: resetCredits.reserve,
+                },
+              }
+            : {}),
           ...(includeIdentity ? { lifecycleId: config.lifecycleId || null } : {}),
           byok: byokConfig.enabled
             ? { prefix: byokConfig.prefix, ...byokStats }
@@ -1333,7 +1578,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         // auth401 = accounts that answered 401 after their refresh chance (cascade
         // guard input + per-request exclusion); authParked = what THIS request parked,
         // kept so a cascade can put it back.
-        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? req.socket : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs };
+        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? req.socket : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs, resetCredits: resetCreditController, resetCreditAttempts: 0, resetCreditRetried: new Set(), resetCreditBackstopYielded: false };
         try {
           if (isStatusRequest) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2064,6 +2309,17 @@ function codexRecoveryResponseHeaders(req, body, ctx, method, headers = {}) {
 
 async function forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir) {
   const maxRetries = accountManager.accounts.length;
+  // Fresh retry cycle = retryCount 0: the initial dispatch or ANY restart that
+  // recursed with 0 (fleet redemption, model fallback, continuity wait,
+  // overload backoff, network failover…). The one-shot backstop yield re-arms
+  // here — a single place no call site can forget — and only here plus
+  // restartRetryCycle() below; it stays armed inside a stale-429 cycle, which
+  // recurses with retryCount + 1.
+  if (retryCount === 0) ctx.resetCreditBackstopYielded = false;
+  const restartRetryCycle = () => {
+    retryCount = 0;
+    ctx.resetCreditBackstopYielded = false;
+  };
   if (ctx.provider === 'codex' && ctx.credentialType == null
       && accountManager.accounts.some(candidate => candidate.type === 'oauth'
         && accountManager._isModelUnsupported(candidate, ctx.model))) {
@@ -2168,6 +2424,34 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       : accountManager.accounts;
     const allAuthFailed = accts.length > 0 && accts.every(authFailedForRequest);
     const modelDeadEnd = !hasUsable(null) && !hasCapped(null);
+    // Quota dead end with automatic reset credits on: redeem a "Full reset"
+    // on the best exhausted account and re-acquire, BEFORE any model fallback
+    // or the fail-fast 429 — the operator asked for the pool to keep serving
+    // the requested model while credits remain. Bounded per request by the
+    // pool size; each pass already walks every eligible candidate.
+    // ONE fleet pass per request: if the reset account still 429s afterwards
+    // (backend did not honour the reset), the request must fail fast rather
+    // than walk the pool spending one credit per account. A fleet-wide model
+    // quarantine is not a quota problem — let the model fallback handle it.
+    if (!allAuthFailed && modelDeadEnd && ctx.resetCredits
+        && ctx.resetCreditAttempts < 1 && !fleetModelQuarantined()) {
+      const pass = await ctx.resetCredits.fleet(
+        accts,
+        'fleet-exhausted',
+        ctx.model,
+        () => hasUsable(null) || hasCapped(null), // request-scoped "dead end resolved?"
+      );
+      // Only spend-capable work uses up the pass; a walk that found no
+      // eligible candidate leaves it for a later account-policy redemption.
+      if (pass.chargePass) ctx.resetCreditAttempts += 1;
+      if (ctx.abortSignal?.aborted || res.destroyed) return;
+      if (pass.redeemed) {
+        ctx.tried429.clear();
+        ctx.tried5xx.clear();
+        restartRetryCycle();
+        continue;
+      }
+    }
     if (!allAuthFailed && modelDeadEnd && canUsePreDispatchFallback()) {
       const fallback = nextModelFallback(ctx, req, body);
       if (fallback) {
@@ -2218,7 +2502,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     if (!waited) break;
     ctx.tried429.clear();
     ctx.tried5xx.clear();
-    retryCount = 0;
+    restartRetryCycle();
   }
   const releaseHeld = () => {
     if (ctx.held != null) {
@@ -2485,6 +2769,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       body: ['GET', 'HEAD'].includes(method) ? undefined : body,
       signal: upstreamDeadline.signal,
     };
+    const dispatchedAt = Date.now();
     const upstreamRequest = ctx.provider === 'codex'
       ? requestUpstreamRaw(upstreamUrl, requestOptions)
       : fetch(upstreamUrl, { ...requestOptions, redirect: 'manual' });
@@ -2492,6 +2777,23 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     const upstreamRes = await upstreamRequest;
     const isStreaming = isEventStream(upstreamRes.headers.get('content-type'));
     if (isStreaming && upstreamRes.status !== 429) upstreamDeadline.stopTimeout();
+    // A response to a request dispatched BEFORE this account's reset credit
+    // landed describes the pre-reset meter (e.g. a 429 that was already in
+    // flight on the last healthy account). Its x-codex headers must not
+    // re-mark the freshly reset account as exhausted, and a 429 from it is
+    // retried rather than throttled — otherwise the fleet would burn a second
+    // credit on another account for a window that is already open.
+    const staleAfterReset = ctx.provider === 'codex'
+      && Number.isFinite(account.quota?.codexResetCreditResetAt)
+      && dispatchedAt < account.quota.codexResetCreditResetAt;
+    // Inside the post-reset grace an ACCEPTED (non-429) response may still
+    // carry the pre-reset meter in its x-codex-* headers; folding it would
+    // re-mark the reset account at 100% and the authoritative poll could no
+    // longer lower it (it only refuses to RAISE). A 429 is folded regardless:
+    // the rejection itself is the evidence that the reset did not take.
+    const holdHeaderFold = staleAfterReset
+      || (ctx.provider === 'codex' && upstreamRes.status !== 429
+        && withinCodexResetCreditGrace(account.quota));
 
     // Extract rate limit headers
     const rateLimitHeaders = {};
@@ -2508,7 +2810,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     if (Object.keys(rateLimitHeaders).some(k => k.startsWith('anthropic-ratelimit-unified-7d_'))) {
       ctx.sawModelWeekly = true;
     }
-    accountManager.updateQuota(account, rateLimitHeaders);
+    // A held fold still records the request itself (usage counters / lastUsed
+    // live in updateQuota): fold an empty header set instead of skipping.
+    accountManager.updateQuota(account, holdHeaderFold ? {} : rateLimitHeaders);
     // 401 = auth failure (stale or revoked token). For OAuth, attempt one
     // forced token refresh and retry the same account (the token may be stale
     // but still refreshable). If that doesn't fix it — refresh fails, the token
@@ -2822,6 +3126,16 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       }
       ctx.last429 = { body: responseBody, headers: responseHeaders };
 
+      if (staleAfterReset && !res.destroyed && retryCount < maxRetries) {
+        console.log(`[TeamCodex] 429 on "${account.name}" was dispatched before its reset credit landed — ignoring it and retrying`);
+        if (logDir) {
+          appendLogSection(`=== RESPONSE 429 — dispatched before reset credit, retrying ===\n${formatHeaders(upstreamRes.headers, metadataOnlyLog)}`);
+          flushRequestLog(logDir, reqId, logSections, hooks);
+        }
+        releaseHeld();
+        return forwardRequest(req, res, body, accountManager, upstream, retryCount + 1, hooks, reqId, ctx, logDir);
+      }
+
       // A model-scoped exhaustion must only exclude this account for that model.
       // Globally throttling it would unnecessarily remove healthy Sonnet/Haiku
       // capacity for up to five minutes.
@@ -2887,6 +3201,33 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       }
 
       if (accountManager.isExhausted(account)) {
+        // Account policy: redeem a reset credit on THIS account and retry it
+        // here, before throttling/switching. (The fleet policy waits for the
+        // acquisition dead end instead, so rotation to a healthy account wins.)
+        // Once per account per request and only while the request's single
+        // redemption pass is unspent (a fleet pass earlier in this request
+        // already used it). The retry does NOT count toward maxRetries so a
+        // second 429 still reaches the normal throttle → dead end →
+        // Codex-native fail-fast body (never the legacy backstop).
+        if (ctx.resetCredits?.policy === 'account' && !res.destroyed
+            && ctx.resetCreditAttempts < 1
+            && !ctx.resetCreditRetried.has(account)) {
+          const attempt = await ctx.resetCredits.account(account, '429-exhausted', ctx.model);
+          // Any outcome that may have spent a credit (reset, reset with no
+          // windows, timeout/5xx) IS the request's single pass: the dead end
+          // that follows must fail fast, not walk the pool spending again.
+          if (attempt.kind !== 'no-spend') ctx.resetCreditAttempts = Math.max(ctx.resetCreditAttempts, 1);
+          if (attempt.reset) {
+            ctx.resetCreditRetried.add(account);
+            if (res.destroyed) return;
+            if (logDir) {
+              appendLogSection(`=== RESPONSE 429 — account quota exhausted, reset credit redeemed, retrying same account ===\n${formatHeaders(upstreamRes.headers, metadataOnlyLog)}`);
+              flushRequestLog(logDir, reqId, logSections, hooks);
+            }
+            releaseHeld();
+            return forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir);
+          }
+        }
         // (a) Account-level exhaustion: throttle this account (so
         // getActiveAccount skips it until it resets) and immediately
         // re-dispatch to another available account — never sleep holding the
@@ -2901,8 +3242,20 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
         if (res.destroyed) return;
 
         // Safety backstop: each retry throttles a distinct account, so
-        // getActiveAccount returns null before this can fire. Cap anyway.
-        if (retryCount >= maxRetries) {
+        // getActiveAccount returns null before this can fire. Cap anyway —
+        // EXCEPT, exactly once per request, when it still holds an unspent
+        // reset-credit pass: retryCount is shared with non-throttling hops
+        // (5xx/auth/stale failovers), so under a 5xx burst it can hit the cap
+        // on the very 429 that empties the pool. That single extra recursion
+        // reaches the acquisition dead end, where the redemption (or the
+        // Codex-native fail-fast body) is decided; the one-shot flag keeps a
+        // pathological stale-429 loop from bypassing the cap forever.
+        const yieldToPass = ctx.resetCredits && ctx.resetCreditAttempts < 1 && !ctx.resetCreditBackstopYielded;
+        if (retryCount >= maxRetries && yieldToPass) {
+          ctx.resetCreditBackstopYielded = true;
+          console.log(`[TeamCodex] Retry cap reached on "${account.name}" with an unspent reset-credit pass — yielding once to the acquisition dead end`);
+        }
+        if (retryCount >= maxRetries && !yieldToPass) {
           ctx.status = 429;
           const ra = computeRetryAfter(accountManager.getStatus().accounts, accountManager.switchThreshold, ctx.model);
           if (!res.headersSent) {

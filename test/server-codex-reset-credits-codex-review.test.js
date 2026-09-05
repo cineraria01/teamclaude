@@ -1,0 +1,650 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { networkInterfaces } from 'node:os';
+import { AccountManager } from '../src/account-manager.js';
+import { createProxyServer } from '../src/server.js';
+import { codexResetCreditEligibility } from '../src/codex-reset-credits.js';
+
+// Cross-model (Codex) adversarial review, 2026-09-05: the reset-credit ledger
+// must survive a crash between the consume POST and the next periodic quota
+// snapshot; the consistency fences must hold for BOTH the 5h and the 7d
+// meter; the operator route and the automatic dead end must share one
+// redemption; the loopback fence must ignore forwarded-for style headers.
+
+const HOUR = 60 * 60 * 1000;
+
+function listen(server, host = '127.0.0.1') {
+  return new Promise(resolve => server.listen(0, host, () => resolve(server.address().port)));
+}
+
+function closeServer(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+    server.closeAllConnections?.();
+  });
+}
+
+async function readBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function waitFor(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('condition was not met before timeout');
+}
+
+function externalIPv4() {
+  return Object.values(networkInterfaces())
+    .flat()
+    .find(address => address && (address.family === 'IPv4' || address.family === 4) && !address.internal)?.address;
+}
+
+function makeCodexAccounts(n, extra = {}) {
+  return Array.from({ length: n }, (_, i) => ({
+    name: `codex-${i}`,
+    provider: 'codex',
+    type: 'oauth',
+    accessToken: `tok-${i}`,
+    refreshToken: `r-${i}`,
+    accountId: `ws-${i}`,
+    expiresAt: Date.now() + HOUR,
+    planType: 'pro',
+    ...extra,
+  }));
+}
+
+function exhaustBoth(am, resetAt, credits = []) {
+  am.accounts.forEach((a, i) => {
+    a.quota.unified7d = 1;
+    a.quota.unified7dReset = resetAt;
+    a.quota.unified5h = 1;
+    a.quota.unified5hReset = Date.now() + 2 * HOUR;
+    a.quota.codexResetCredits = credits[i] ?? null;
+  });
+}
+
+// Exhaustion 429 carrying BOTH meters at 100% (the 5h window is the
+// secondary one in the live header set).
+function exhaustion429Both(res) {
+  res.writeHead(429, {
+    'content-type': 'application/json',
+    'retry-after': '60',
+    'x-codex-primary-used-percent': '100',
+    'x-codex-primary-window-minutes': '10080',
+    'x-codex-primary-reset-at': String(Math.floor(Date.now() / 1000) + 60 * 3600),
+    'x-codex-secondary-used-percent': '100',
+    'x-codex-secondary-window-minutes': '300',
+    'x-codex-secondary-reset-at': String(Math.floor(Date.now() / 1000) + 2 * 3600),
+  });
+  res.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'pro', resets_at: Math.floor(Date.now() / 1000) + 60 * 3600 } }));
+}
+
+function ok200Both(res, used = '100') {
+  res.writeHead(200, {
+    'content-type': 'application/json',
+    'x-codex-primary-used-percent': used,
+    'x-codex-primary-window-minutes': '10080',
+    'x-codex-primary-reset-at': String(Math.floor(Date.now() / 1000) + 60 * 3600),
+    'x-codex-secondary-used-percent': used,
+    'x-codex-secondary-window-minutes': '300',
+    'x-codex-secondary-reset-at': String(Math.floor(Date.now() / 1000) + 2 * 3600),
+  });
+  res.end(JSON.stringify({ id: 'response-id', usage: { input_tokens: 1, output_tokens: 1 } }));
+}
+
+function usagePayloadBoth(used, credits) {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    plan_type: 'pro',
+    rate_limit: {
+      allowed: true,
+      limit_reached: false,
+      primary_window: { used_percent: used, limit_window_seconds: 604800, reset_after_seconds: 60 * 3600, reset_at: now + 60 * 3600 },
+      secondary_window: { used_percent: used, limit_window_seconds: 18000, reset_after_seconds: 2 * 3600, reset_at: now + 2 * 3600 },
+    },
+    rate_limit_reset_credits: { available_count: credits, applicable_available_count: 0 },
+  };
+}
+
+function mockUpstream(script = {}) {
+  const calls = { responses: [], consume: [], usage: [] };
+  const server = http.createServer(async (req, res) => {
+    const path = req.url.split('?', 1)[0];
+    const token = req.headers.authorization;
+    const body = await readBody(req);
+    if (path === '/wham/rate-limit-reset-credits/consume') {
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch { /* keep null */ }
+      calls.consume.push({ token, body: parsed });
+      const answer = script.consume ? await script.consume(calls.consume.length, token) : { status: 200, body: { code: 'reset', windows_reset: 2 } };
+      if (answer === 'hang') return;
+      res.writeHead(answer.status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(answer.body));
+      return;
+    }
+    if (path === '/wham/usage') {
+      calls.usage.push({ token });
+      const answer = script.usage ? script.usage(calls.usage.length, token) : { used: 100, credits: 3 };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(usagePayloadBoth(answer.used, answer.credits)));
+      return;
+    }
+    calls.responses.push({ token, path });
+    const answer = script.responses ? script.responses(calls.responses.length, token, res) : { status: 200 };
+    if (answer === 'handled') return;
+    if (answer.status === 429) exhaustion429Both(res);
+    else ok200Both(res, answer.used ?? '1');
+  });
+  return { server, calls };
+}
+
+function startProxy(am, upstreamPort, overrides = {}, hooks = {}) {
+  return createProxyServer(am, {
+    provider: 'codex',
+    proxy: { apiKey: 'k' },
+    upstream: `http://127.0.0.1:${upstreamPort}`,
+    activeWarmup: false,
+    codexUsageRefresh: false,
+    continuityMode: true,
+    continuityJitterMs: 0,
+    codexResetCredits: true,
+    ...overrides,
+  }, hooks);
+}
+
+async function postResponses(proxyPort, path = '/codex/responses') {
+  const started = Date.now();
+  const response = await fetch(`http://127.0.0.1:${proxyPort}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.6', input: [] }),
+  });
+  const text = await response.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* keep raw */ }
+  return { status: response.status, headers: response.headers, text, json, elapsedMs: Date.now() - started };
+}
+
+async function withProxy(am, script, overrides, run, hooks = {}) {
+  const { server: upstream, calls } = mockUpstream(script);
+  const upstreamPort = await listen(upstream);
+  const proxy = startProxy(am, upstreamPort, overrides, hooks);
+  const proxyPort = await listen(proxy);
+  try {
+    await run({ proxyPort, calls, upstreamPort });
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream)]);
+  }
+}
+
+test('ledger durability: the host is asked to persist the snapshot before the consume POST (pending) and after the outcome', async () => {
+  const am = new AccountManager(makeCodexAccounts(1));
+  exhaustBoth(am, Date.now() + 60 * HOUR, [3]);
+  const ledger = [];
+  let releaseConsume = null;
+  const consumeHeld = new Promise(resolve => { releaseConsume = resolve; });
+  await withProxy(am, {
+    consume: async () => { await consumeHeld; return { status: 200, body: { code: 'reset', windows_reset: 2 } }; },
+  }, {}, async ({ proxyPort, calls }) => {
+    const pending = postResponses(proxyPort);
+    await waitFor(() => calls.consume.length === 1);
+    // While the POST is in flight the ledger already shows a durable intent.
+    assert.deepEqual(ledger, ['pending']);
+    assert.equal(am.accounts[0].quota.codexResetCreditLastOutcome, 'pending');
+    assert.ok(Date.now() - am.accounts[0].quota.codexResetCreditLastAt < 2000, 'cooldown stamped before the POST');
+    releaseConsume();
+    const r = await pending;
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(ledger, ['pending', 'reset'], 'outcome persisted right after it landed');
+  }, {
+    onResetCreditLedger: account => ledger.push(account.quota.codexResetCreditLastOutcome),
+  });
+});
+
+test('ledger durability: a restored "pending" stamp keeps the account inside its cooldown after a restart', () => {
+  const before = new AccountManager(makeCodexAccounts(1));
+  exhaustBoth(before, Date.now() + 60 * HOUR, [3]);
+  before.accounts[0].quota.codexResetCreditLastAt = Date.now() - 5_000;
+  before.accounts[0].quota.codexResetCreditLastOutcome = 'pending';
+  const snapshot = JSON.parse(JSON.stringify(before.exportQuotaState()));
+  const after = new AccountManager(makeCodexAccounts(1));
+  after.importQuotaState(snapshot);
+  const verdict = codexResetCreditEligibility(after.accounts[0], {
+    cooldownMs: 30 * 60 * 1000,
+    isExhausted: a => after.isExhausted(a),
+  });
+  assert.deepEqual(verdict, { eligible: false, reason: 'pending' }, 'fail-closed until a poll re-reads the count, whatever the cooldown');
+});
+
+test('fences hold for BOTH meters: a stale pre-reset 429 and a lagging accepted response carry 5h AND 7d at 100%', async () => {
+  const am = new AccountManager(makeCodexAccounts(1, { maxConcurrent: 3 }));
+  am.accounts[0].quota.unified7d = 0.5;
+  am.accounts[0].quota.unified7dReset = Date.now() + 60 * HOUR;
+  am.accounts[0].quota.unified5h = 0.5;
+  am.accounts[0].quota.unified5hReset = Date.now() + 2 * HOUR;
+  am.accounts[0].quota.codexResetCredits = 3;
+  const held = new Map();
+  let releaseSecond = null;
+  const bothArrived = new Promise(resolve => { releaseSecond = resolve; });
+  await withProxy(am, {
+    responses: (n, _token, res) => {
+      if (n === 1 || n === 2) {
+        held.set(n, res);
+        if (held.size === 2) {
+          exhaustion429Both(held.get(1)); // R1 rejected → reset → R1 retries as #3
+          releaseSecond();
+        }
+        return 'handled';
+      }
+      if (n === 3) {
+        ok200Both(res, '100'); // accepted, but its headers still show the pre-reset 100%
+        setTimeout(() => exhaustion429Both(held.get(2)), 20); // R2's stale 429 lands after the reset
+        return 'handled';
+      }
+      return { status: 200 };
+    },
+  }, {}, async ({ proxyPort, calls }) => {
+    const r1 = postResponses(proxyPort);
+    const r2 = postResponses(proxyPort);
+    await bothArrived;
+    const [a, b] = await Promise.all([r1, r2]);
+    assert.equal(a.status, 200, a.text);
+    assert.equal(b.status, 200, b.text);
+    assert.equal(calls.consume.length, 1);
+    assert.equal(am.accounts[0].quota.unified7d, 0, '7d meter untouched by the stale 429 and the lagging 200');
+    assert.equal(am.accounts[0].quota.unified5h, 0, '5h meter untouched too');
+    assert.equal(am.accounts[0].status, 'active');
+    assert.equal(calls.responses.length, 4);
+  });
+});
+
+test('grace holds for BOTH meters on the authoritative poll, then both re-apply after the grace', async () => {
+  const am = new AccountManager(makeCodexAccounts(1));
+  await withProxy(am, { usage: () => ({ used: 100, credits: 3 }) },
+    { codexUsageRefresh: true, warmupIntervalMs: 0 }, async ({ proxyPort, calls }) => {
+      await waitFor(() => am.accounts[0].quota.codexUsageAt != null);
+      assert.equal(am.accounts[0].quota.unified5h, 1);
+      assert.equal(am.accounts[0].quota.unified7d, 1);
+      const r = await postResponses(proxyPort);
+      assert.equal(r.status, 200, r.text);
+      const polls = calls.usage.length;
+      await waitFor(() => calls.usage.length > polls, 4000);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      assert.equal(am.accounts[0].quota.unified7d, 0, '7d held inside the grace');
+      assert.equal(am.accounts[0].quota.unified5h, 0, '5h held inside the grace');
+      // Past the grace the authoritative meter wins again for both windows.
+      am.accounts[0].quota.codexResetCreditResetAt = Date.now() - 200_000;
+      am.updateCodexUsage(am.accounts[0], usagePayloadBoth(100, 2));
+      assert.equal(am.accounts[0].quota.unified7d, 1);
+      assert.equal(am.accounts[0].quota.unified5h, 1);
+    });
+});
+
+test('the operator route and an automatic dead end share ONE redemption (single-flight across paths)', async () => {
+  const am = new AccountManager(makeCodexAccounts(1));
+  exhaustBoth(am, Date.now() + 60 * HOUR, [3]);
+  let releaseConsume = null;
+  const consumeHeld = new Promise(resolve => { releaseConsume = resolve; });
+  await withProxy(am, {
+    consume: async () => { await consumeHeld; return { status: 200, body: { code: 'reset', windows_reset: 2 } }; },
+  }, {}, async ({ proxyPort, calls }) => {
+    const auto = postResponses(proxyPort); // automatic dead end → consume in flight
+    await waitFor(() => calls.consume.length === 1);
+    const operator = fetch(`http://127.0.0.1:${proxyPort}/teamclaude/codex/reset-credit?account=codex-0`, {
+      method: 'POST', headers: { 'x-api-key': 'k' },
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(calls.consume.length, 1, 'the operator call joined the in-flight redemption');
+    releaseConsume();
+    const [r, op] = await Promise.all([auto, operator]);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(op.status, 200);
+    const body = await op.json();
+    assert.equal(body.reset, true);
+    assert.equal(calls.consume.length, 1, 'exactly one credit for both callers');
+    assert.equal(am.accounts[0].quota.codexResetCredits, 2);
+  });
+});
+
+test('operator route: forwarded-for style headers cannot impersonate loopback', async t => {
+  const host = externalIPv4();
+  if (!host) {
+    t.skip('no non-loopback IPv4 interface is available');
+    return;
+  }
+  const { server: upstream, calls } = mockUpstream();
+  const upstreamPort = await listen(upstream);
+  const am = new AccountManager(makeCodexAccounts(1));
+  am.accounts[0].quota.codexResetCredits = 3;
+  const proxy = startProxy(am, upstreamPort);
+  const proxyPort = await listen(proxy, '0.0.0.0');
+  try {
+    const spoofed = await fetch(`http://${host}:${proxyPort}/teamclaude/codex/reset-credit?account=codex-0`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': 'k',
+        'x-forwarded-for': '127.0.0.1',
+        'x-real-ip': '127.0.0.1',
+        forwarded: 'for=127.0.0.1',
+      },
+    });
+    assert.equal(spoofed.status, 403);
+    assert.equal((await spoofed.json()).error.type, 'permission_error');
+    assert.equal(calls.consume.length, 0);
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream)]);
+  }
+});
+
+test('the retry backstop yields once to an unspent redemption pass instead of the legacy "All accounts throttled" body', async () => {
+  // One account (maxRetries 1). R1 and R2 are in flight on it; R1's 429 resets
+  // the account (R1's pass), R2's stale 429 is retried (retryCount 1 == cap),
+  // and that retry meets a genuine post-reset 429. Before the fix the cap
+  // answered R2 with the legacy body without ever reaching the acquisition
+  // dead end; now R2 gets there and ends in the Codex-native fail-fast body.
+  const am = new AccountManager(makeCodexAccounts(1, { maxConcurrent: 3 }));
+  am.accounts[0].quota.unified7d = 0.5;
+  am.accounts[0].quota.unified7dReset = Date.now() + 60 * HOUR;
+  am.accounts[0].quota.unified5h = 0.5;
+  am.accounts[0].quota.unified5hReset = Date.now() + 2 * HOUR;
+  am.accounts[0].quota.codexResetCredits = 3;
+  const held = new Map();
+  let releaseSecond = null;
+  const bothArrived = new Promise(resolve => { releaseSecond = resolve; });
+  await withProxy(am, {
+    responses: (n, _token, res) => {
+      if (n === 1 || n === 2) {
+        held.set(n, res);
+        if (held.size === 2) { exhaustion429Both(held.get(1)); releaseSecond(); }
+        return 'handled';
+      }
+      if (n === 3) {
+        ok200Both(res, '1'); // R1 served after the reset
+        setTimeout(() => exhaustion429Both(held.get(2)), 20); // R2's stale 429 lands after the reset
+        return 'handled';
+      }
+      return { status: 429 }; // R2's post-reset retry is genuinely rejected
+    },
+  }, { continuityMaxWaitMs: 500, continuityMaxSleepMs: 10 }, async ({ proxyPort, calls }) => {
+    const r1 = postResponses(proxyPort);
+    const r2 = postResponses(proxyPort);
+    await bothArrived;
+    const [a, b] = await Promise.all([r1, r2]);
+    assert.equal(a.status, 200, a.text);
+    assert.equal(b.status, 429, b.text);
+    assert.equal(b.json?.error?.type, 'usage_limit_reached', b.text);
+    assert.doesNotMatch(b.text, /All accounts throttled/, 'legacy backstop body must not pre-empt the dead end');
+    assert.equal(calls.consume.length, 1, 'still one credit for the episode');
+    assert.equal(calls.responses.length, 4);
+  });
+});
+
+test('an operator redemption on an account this request cannot use does not capture the automatic pass', async () => {
+  // codex-0 is quarantined for the model (operator resets it anyway, slowly);
+  // codex-1 is exhausted with credits. The automatic dead end must redeem on
+  // codex-1 instead of joining codex-0's in-flight redemption.
+  const am = new AccountManager(makeCodexAccounts(2));
+  am.accounts[0].quota.unified7d = 1;
+  am.accounts[0].quota.unified7dReset = Date.now() + 60 * HOUR;
+  am.accounts[0].quota.unified5h = 0.1;
+  am.accounts[0].quota.unified5hReset = Date.now() + 2 * HOUR;
+  am.accounts[0].quota.codexResetCredits = 3;
+  am.markModelUnsupported(am.accounts[0], 'gpt-5.6');
+  am.accounts[1].quota.unified7d = 1;
+  am.accounts[1].quota.unified7dReset = Date.now() + 60 * HOUR;
+  am.accounts[1].quota.unified5h = 0.1;
+  am.accounts[1].quota.unified5hReset = Date.now() + 2 * HOUR;
+  am.accounts[1].quota.codexResetCredits = 2;
+  let releaseOperator = null;
+  const operatorHeld = new Promise(resolve => { releaseOperator = resolve; });
+  await withProxy(am, {
+    consume: async (_n, token) => {
+      if (token === 'Bearer tok-0') await operatorHeld;
+      return { status: 200, body: { code: 'reset', windows_reset: 2 } };
+    },
+  }, {}, async ({ proxyPort, calls }) => {
+    const operator = fetch(`http://127.0.0.1:${proxyPort}/teamclaude/codex/reset-credit?account=codex-0`, {
+      method: 'POST', headers: { 'x-api-key': 'k' },
+    });
+    await waitFor(() => calls.consume.length === 1);
+    const r = await postResponses(proxyPort); // automatic dead end while codex-0's redemption is in flight
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(calls.consume.map(c => c.token), ['Bearer tok-0', 'Bearer tok-1'], 'the automatic pass went to the account that can serve');
+    assert.deepEqual(calls.responses.map(c => c.token), ['Bearer tok-1']);
+    releaseOperator();
+    assert.equal((await operator).status, 200);
+  });
+});
+
+test('restart with cooldown 0: a restored "pending" stamp blocks redemption until the poll re-reads the count', async () => {
+  const before = new AccountManager(makeCodexAccounts(1));
+  exhaustBoth(before, Date.now() + 60 * HOUR, [3]);
+  before.accounts[0].quota.codexResetCreditLastAt = Date.now() - 5_000;
+  before.accounts[0].quota.codexResetCreditLastOutcome = 'pending';
+  before.accounts[0].quota.codexResetCreditsAt = Date.now() - 60_000;
+  const snapshot = JSON.parse(JSON.stringify(before.exportQuotaState()));
+  const restored = new AccountManager(makeCodexAccounts(1));
+  restored.importQuotaState(snapshot);
+  await withProxy(restored, {}, { codexResetCreditsCooldownMs: 0 }, async ({ proxyPort, calls }) => {
+    const r = await postResponses(proxyPort);
+    assert.equal(r.status, 429, r.text);
+    assert.equal(calls.consume.length, 0, 'fail-closed: no second redemption before the count is reconciled');
+  });
+  // The authoritative poll re-reads the count (2 left, still 100%) → eligible again.
+  const polled = new AccountManager(makeCodexAccounts(1));
+  polled.importQuotaState(snapshot);
+  await withProxy(polled, { usage: () => ({ used: 100, credits: 2 }) },
+    { codexResetCreditsCooldownMs: 0, codexUsageRefresh: true, warmupIntervalMs: 0 }, async ({ proxyPort, calls }) => {
+      await waitFor(() => polled.accounts[0].quota.codexResetCreditsAt > polled.accounts[0].quota.codexResetCreditLastAt);
+      const r = await postResponses(proxyPort);
+      assert.equal(r.status, 200, r.text);
+      assert.equal(calls.consume.length, 1, 'a reconciled count allows the (operator-chosen cooldown 0) redemption');
+    });
+});
+
+test('the backstop yield re-arms after a fresh cycle: a second legitimate yield later in the same request is honoured', async () => {
+  // One account (maxRetries 1). Twice in a row: an operator reset lands while a
+  // request is in flight, its 429 is judged stale and retried (retryCount hits
+  // the cap), and the retry meets a genuine 429 → the cap must yield to the
+  // unspent pass BOTH times (the continuity wait in between re-arms the
+  // one-shot flag); the request finally gets served.
+  const fast429 = res => {
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      'retry-after': '1',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      // The window itself rolls over in ~1 s, so the request WAITS (inside the
+      // continuity budget) instead of failing fast — that wait is the "fresh
+      // cycle" that must re-arm the one-shot yield.
+      'x-codex-primary-reset-at': String(Math.floor(Date.now() / 1000) + 1),
+    });
+    res.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'pro', resets_at: Math.floor(Date.now() / 1000) + 1 } }));
+  };
+  const am = new AccountManager(makeCodexAccounts(1));
+  am.accounts[0].quota.unified7d = 0.5;
+  am.accounts[0].quota.unified7dReset = Date.now() + 60 * HOUR;
+  am.accounts[0].quota.unified5h = 0.5;
+  am.accounts[0].quota.unified5hReset = Date.now() + 2 * HOUR;
+  am.accounts[0].quota.codexResetCredits = 5;
+  const held = {};
+  const arrived = {};
+  const arrivedPromise = n => new Promise(resolve => { arrived[n] = resolve; });
+  const p1 = arrivedPromise(1);
+  const p3 = arrivedPromise(3);
+  await withProxy(am, {
+    responses: (n, _token, res) => {
+      if (n === 1 || n === 3) { held[n] = res; arrived[n](); return 'handled'; } // held until an operator reset lands
+      if (n === 2 || n === 4) { fast429(res); return 'handled'; }             // genuine post-reset 429s (cap reached)
+      return { status: 200 };                                                 // #5 finally served
+    },
+  }, { continuityMaxWaitMs: 8000, continuityMaxSleepMs: 50 }, async ({ proxyPort, calls }) => {
+    const operatorReset = async () => {
+      const r = await fetch(`http://127.0.0.1:${proxyPort}/teamclaude/codex/reset-credit?account=codex-0`, { method: 'POST', headers: { 'x-api-key': 'k' } });
+      assert.equal(r.status, 200, await r.text());
+    };
+    const request = postResponses(proxyPort);
+    await p1;
+    await operatorReset();      // reset lands while #1 is in flight → #1's 429 is stale → retry (retryCount 1 = cap)
+    fast429(held[1]);
+    await p3;                   // after yield #1, the throttle (1 s) expires, the cycle re-arms, #3 is dispatched
+    await operatorReset();      // again: stale 429 → retry at the cap → genuine 429 → yield #2 must be honoured
+    fast429(held[3]);
+    const r = await request;
+    assert.equal(r.status, 200, r.text);
+    assert.doesNotMatch(r.text, /All accounts throttled/);
+    assert.equal(calls.responses.length, 5, 'held, genuine, held, genuine, served');
+    assert.deepEqual(calls.consume.map(c => c.token), ['Bearer tok-0', 'Bearer tok-0'], 'both redemptions were the operator\'s, none automatic');
+    assert.ok(r.elapsedMs >= 2000 && r.elapsedMs < 7000, `two throttle waits (${r.elapsedMs}ms)`);
+  });
+});
+
+test('sustained exhaustion storm with no resets: the backstop never spins, no credit is spent, the request fails fast', async () => {
+  // Two permanently exhausted accounts whose credit count is unknown (never
+  // polled) → the fleet walk never has a candidate. Every dispatch is a
+  // genuine 429 with a 1 s throttle. The request must end inside the
+  // continuity budget with the Codex-native body, with zero consume POSTs and
+  // at most one backstop yield per cycle (observable through the log line).
+  const logs = [];
+  const original = console.log;
+  console.log = (...args) => { logs.push(args.join(' ')); };
+  try {
+    const am = new AccountManager(makeCodexAccounts(2));
+    for (const a of am.accounts) {
+      a.quota.unified7d = 0.5; // routable at first so the storm actually dispatches
+      a.quota.unified7dReset = Date.now() + 60 * HOUR;
+      a.quota.unified5h = 0.5;
+      a.quota.unified5hReset = Date.now() + 2 * HOUR;
+      a.quota.codexResetCredits = null;
+    }
+    const storm429 = res => {
+      res.writeHead(429, {
+        'content-type': 'application/json',
+        'retry-after': '1',
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-at': String(Math.floor(Date.now() / 1000) + 1),
+      });
+      res.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'pro', resets_at: Math.floor(Date.now() / 1000) + 1 } }));
+    };
+    await withProxy(am, { responses: (_n, _token, res) => { storm429(res); return 'handled'; } },
+      { continuityMaxWaitMs: 3000, continuityMaxSleepMs: 50 }, async ({ proxyPort, calls }) => {
+        const r = await postResponses(proxyPort);
+        assert.equal(r.status, 429, r.text);
+        assert.equal(r.json?.error?.type, 'usage_limit_reached', r.text);
+        assert.doesNotMatch(r.text, /All accounts throttled/);
+        assert.ok(r.elapsedMs < 6000, `ended inside the budget (${r.elapsedMs}ms)`);
+        assert.equal(calls.consume.length, 0, 'unknown credit count → never redeemed');
+        assert.ok(calls.responses.length >= 2, 'the storm actually dispatched');
+        const yields = logs.filter(l => l.includes('yielding once to the acquisition dead end')).length;
+        const cycles = logs.filter(l => l.includes('No eligible capacity') && l.includes('waiting')).length;
+        assert.ok(yields <= cycles + 1, `yields ${yields} bounded by cycles ${cycles}`);
+      });
+  } finally {
+    console.log = original;
+  }
+});
+
+test('structural guard: every forwardRequest recursion and every retryCount write is enumerated by a lexical audit', async () => {
+  // Design (after two Codex cross-model rounds): a fresh retry cycle is
+  // retryCount === 0 — re-armed once at forwardRequest entry (so any restart
+  // that recurses with 0 is covered without call-site discipline) and by
+  // restartRetryCycle() for in-loop restarts. Text/regex matching could be
+  // evaded by a parenthesised argument, an alias, or a destructuring reset,
+  // so the guard tokenizes server.js (test/helpers/retry-cycle-audit.js) and
+  // walks brackets: every reference to forwardRequest must be the definition
+  // or a call whose retry argument is `0` / `retryCount + 1` / the
+  // account-policy bare `retryCount`; every binding or write of retryCount
+  // (any assignment operator, ++/--, destructuring, for-in/of, let/const/var,
+  // parameter shadowing) must be the single `retryCount = 0` inside the helper.
+  const { readFile } = await import('node:fs/promises');
+  const { auditRetryCycle } = await import('./helpers/retry-cycle-audit.js');
+  const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+
+  const audit = auditRetryCycle(source);
+  assert.deepEqual(audit.violations, [], `retry-cycle audit violations:\n${audit.violations.join('\n')}`);
+  assert.ok(audit.calls.length >= 10, `expected the known recursion sites, found ${audit.calls.length}`);
+  assert.ok(audit.calls.filter(c => c.retryArg === '0').length >= 8, 'fresh-cycle recursions (initial dispatch + restarts)');
+  assert.equal(audit.writes.length, 1, 'exactly one retryCount write, inside the helper');
+
+  // The flag is re-armed in exactly two places: the entry guard and the helper.
+  const reArms = [...source.matchAll(/ctx\.resetCreditBackstopYielded = false/g)];
+  assert.equal(reArms.length, 2, `re-arm assignments: ${reArms.length}`);
+  assert.match(source, /if \(retryCount === 0\) ctx\.resetCreditBackstopYielded = false;/, 'entry re-arm present');
+  const helperStart = audit.tokens[audit.helperRange[0]].start;
+  const helperEnd = audit.tokens[audit.helperRange[1]].end;
+  assert.ok(reArms.some(m => m.index > helperStart && m.index < helperEnd), 'helper re-arms');
+  assert.ok((source.match(/restartRetryCycle\(\);/g) || []).length >= 2, 'in-loop restarts use the helper');
+});
+
+test('structural guard self-test: the lexical audit catches the evasions text matching missed', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { auditRetryCycle, tokenizeJs } = await import('./helpers/retry-cycle-audit.js');
+  const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+  const helperCall = 'restartRetryCycle();';
+  assert.ok(source.includes(helperCall));
+  const replaceOnce = (needle, replacement) => {
+    assert.ok(source.includes(needle), `mutant anchor missing: ${needle}`);
+    return source.replace(needle, replacement);
+  };
+  const mutants = [
+    ['parenthesised argument + retryCount + 2 restart (regex could not enumerate it)',
+      replaceOnce(helperCall, 'return forwardRequest(req, res, String(body), accountManager, upstream, retryCount + 2, hooks, reqId, ctx, logDir);')],
+    ['multi-line call with a non-allowlisted constant',
+      replaceOnce(helperCall, 'return forwardRequest(\n  req, res, body,\n  accountManager, upstream,\n  1,\n  hooks, reqId, ctx, logDir);')],
+    ['alias of forwardRequest',
+      replaceOnce(helperCall, 'const recurse = forwardRequest; return recurse(req, res, body, accountManager, upstream, 0, hooks, reqId, ctx, logDir);')],
+    ['inline restart outside the helper',
+      replaceOnce(helperCall, 'retryCount = 0; ctx.resetCreditBackstopYielded = false;')],
+    ['destructuring reset', replaceOnce(helperCall, '({ retryCount } = { retryCount: 0 });')],
+    ['array-pattern reset', replaceOnce(helperCall, '[retryCount] = [0];')],
+    ['logical compound assignment', replaceOnce(helperCall, 'retryCount ??= 0;')],
+    ['exponent compound assignment', replaceOnce(helperCall, 'retryCount **= 0;')],
+    ['postfix update', replaceOnce(helperCall, 'retryCount++;')],
+    ['prefix update', replaceOnce(helperCall, '--retryCount;')],
+    ['for-of target', replaceOnce(helperCall, 'for (retryCount of [0]) break;')],
+    ['const shadowing', replaceOnce(helperCall, 'const retryCount = 0; void retryCount;')],
+    ['destructuring shadowing', replaceOnce(helperCall, 'const { retryCount } = ctx; void retryCount;')],
+    ['arrow parameter shadowing', replaceOnce(helperCall, 'const f = (retryCount) => retryCount; void f;')],
+    ['helper writes a non-zero value', replaceOnce('retryCount = 0;', 'retryCount = retryCount - retryCount;')],
+    ['helper loses its write', replaceOnce('retryCount = 0;', 'void 0;')],
+    ['second function named forwardRequest', source + '\nfunction forwardRequest(a, b, c, d, e, retryCount) { return retryCount; }\n'],
+  ];
+  for (const [name, mutated] of mutants) {
+    const { violations } = auditRetryCycle(mutated);
+    assert.ok(violations.length > 0, `mutant not detected: ${name}`);
+  }
+
+  // Decoys inside strings, comments, template literals and regex literals must
+  // NOT count, and reads must not be mistaken for writes.
+  const decoy = `
+    // retryCount = 5; forwardRequest(x, y, z, a, b, 9)
+    /* retryCount++ */
+    const s = 'retryCount = 1; forwardRequest(a,b,c,d,e,7,g)';
+    const t = \`retry \${retryCount} of \${max} — retryCount = 2\`;
+    const re = /retryCount\\s*=\\s*\\d+/;
+    const restartRetryCycle = () => { retryCount = 0; };
+    async function forwardRequest(req, res, body, am, up, retryCount, hooks, id, ctx, dir) {
+      if (retryCount === 0) ctx.flag = false;
+      const o = { retryCount, retryCount: retryCount + 1, n: ctx.retryCount };
+      console.log(o.retryCount, retryCount >= 3 ? 'x' : 'y', \`\${retryCount}\`);
+      log(retryCount);
+      if (retryCount < 3) return forwardRequest(req, res, body, am, up, retryCount + 1, hooks, id, ctx, dir);
+      restartRetryCycle();
+      return forwardRequest(req, res, body, am, up, 0, hooks, id, ctx, dir);
+    }
+  `;
+  const clean = auditRetryCycle(decoy);
+  assert.deepEqual(clean.violations, []);
+  assert.equal(clean.calls.length, 2);
+  assert.equal(clean.writes.length, 1);
+  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 1);
+});

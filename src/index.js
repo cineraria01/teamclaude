@@ -493,6 +493,15 @@ async function superviseServerCommand() {
       });
       return;
     }
+    // The worker only ever sees loopback (this supervisor forwards to it), so
+    // the operator-only reset-credit route must be fenced HERE, like rotate.
+    if (req.url.split('?', 1)[0] === '/teamclaude/codex/reset-credit' && !isLocal) {
+      rejectPublicRequest(req, res, 403, { 'content-type': 'application/json' }, {
+        type: 'error',
+        error: { type: 'permission_error', message: 'Reset credit redemption is local-only.' },
+      });
+      return;
+    }
     if (config.proxy?.apiKey && clientKey !== config.proxy.apiKey
       && bearerKey !== config.proxy.apiKey && !isLocal) {
       rejectPublicRequest(req, res, 401, { 'content-type': 'application/json' }, {
@@ -1516,6 +1525,18 @@ async function proxyWorkerCommand() {
   // Existing configs predate continuityMode; treat it as enabled unless the
   // operator explicitly opts out.
   config.continuityMode = config.continuityMode !== false;
+  // Reset-credit ledger writes (pending intent before the consume POST and
+  // the outcome right after) are persisted immediately: the periodic snapshot
+  // is 60 s apart and the exit handler never runs on SIGKILL, so without this
+  // a crash right after the backend consumed a credit would forget the
+  // cooldown and let a restart redeem the same account again.
+  hooks.onResetCreditLedger = () => {
+    try {
+      saveQuotaSnapshot();
+    } catch (err) {
+      console.error(`[TeamCodex] Reset credit ledger snapshot failed: ${err.message}`);
+    }
+  };
   const server = createProxyServer(accountManager, config, hooks);
   let liveSyncChain = Promise.resolve();
   process.on('SIGHUP', () => {
@@ -2870,6 +2891,15 @@ async function statusCommand() {
           line += `    ${name}: ${(w.utilization * 100).toFixed(1)}% used`;
         }
         console.log(line);
+        // Codex reset credits ("Full reset" grants). Guarded with != null so a
+        // status from an older server (no field) prints nothing extra.
+        if (q.codexResetCredits != null) {
+          const consumed = q.codexResetCreditsConsumed ? `, ${q.codexResetCreditsConsumed} redeemed` : '';
+          const last = q.codexResetCreditLastOutcome ? ` (last: ${q.codexResetCreditLastOutcome})` : '';
+          console.log(`    Reset credits: ${q.codexResetCredits} available${consumed}${last}`);
+        } else if (data.resetCredits?.enabled) {
+          console.log('    Reset credits: unknown (no wham/usage poll has reported a count yet)');
+        }
       } else {
         const tok = q.tokensLimit ? ((1 - q.tokensRemaining / q.tokensLimit) * 100).toFixed(1) + '%' : '-';
         const req = q.requestsLimit ? ((1 - q.requestsRemaining / q.requestsLimit) * 100).toFixed(1) + '%' : '-';
