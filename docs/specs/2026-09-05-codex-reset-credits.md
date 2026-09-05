@@ -336,7 +336,6 @@ Files: `codex-rs/backend-client/src/client/rate_limit_resets.rs`,
 ## Test
 
 ```bash
-cd /Users/sangrok/.claude/worktrees/teamclaude-reset-credits-20260905
 node --test --test-concurrency=1 \
   test/codex-reset-credits.test.js test/codex-reset-credits-outcomes.test.js \
   test/server-codex-reset-credits.test.js test/server-codex-reset-credits-guards.test.js \

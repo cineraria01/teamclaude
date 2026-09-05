@@ -109,21 +109,6 @@ test('subscription cancel stores the KST end boundary on a non-KST host', async 
   }
 });
 
-test('subscription cancel stores the KST end boundary on a non-KST host', async () => {
-  const fx = await fixture();
-  try {
-    const result = runSubscription(fx.configPath, [
-      'cancel', 'test981110', '--ends-on', '2026-09-06',
-    ], 'America/New_York');
-    assert.equal(result.status, 0, result.stderr);
-
-    const account = (await fx.read()).accounts.find(a => a.email.startsWith('test981110@'));
-    assert.equal(account.subscriptionCancellation.endsAt, '2026-09-06T15:00:00.000Z');
-  } finally {
-    await fx.cleanup();
-  }
-});
-
 test('subscription cancel and clear fail closed on typos, invalid dates, and UUID mismatch', async () => {
   const fx = await fixture();
   try {
