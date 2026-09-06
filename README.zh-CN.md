@@ -42,8 +42,10 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # 读取已有的 Claude Code 登录
-teamcodex codex import    # 读取已有的 ~/.codex/auth.json
-teamclaude server         # 启动代理，然后执行 `teamclaude run`
+teamclaude server         # 启动 Claude 代理，然后执行 `teamclaude run`
+
+teamclaude codex import   # 读取已有的 ~/.codex/auth.json
+teamclaude codex server   # Codex 池是独立代理，用自己的端口
 ```
 
 这样安装的是默认分支。`npm i -g teamcodex` 也能用，但 registry 上的版本是
@@ -51,19 +53,25 @@ teamclaude server         # 启动代理，然后执行 `teamclaude run`
 Codex 重置额度、账户重新认证，也没有 401 级联防护。除非你确实需要那个旧版本，
 否则请从仓库安装。
 
-本包会装上**两个命令**，用哪一个决定了你连的是哪个池子：
+本包会装上**两个命令**。但决定用哪个池子的是 `codex` 子命令，不是二进制本身——
+二进制只决定没有 `codex` 子命令时的默认值：
 
 | 命令 | 池子 | 配置 |
 |---|---|---|
-| `teamclaude …` | Claude（Anthropic） | `~/.config/teamclaude.json`，端口 3456 |
-| `teamcodex codex …` | Codex（ChatGPT） | `~/.config/teamcodex.json`，端口 3457 |
+| `teamclaude …`（不带 `codex`） | Claude（Anthropic） | `~/.config/teamclaude.json`，端口 3456 |
+| `teamclaude codex …` 或 `teamcodex codex …` | Codex（ChatGPT） | `~/.config/teamcodex.json`，端口 3457 |
+| `teamcodex …`（不带 `codex`） | 由继承来的 `TEAMCLAUDE_PROVIDER` 决定，未设置时为 Claude | 对应 provider 的文件 |
 
-`teamclaude` 存在的意义就是不会被劫持：它在做任何事之前先清掉继承来的
-`TEAMCLAUDE_PROVIDER`，所以残留在 shell 里的值、launchd plist，或者
-`teamcodex run` 的子进程，都无法把一条 Claude 命令悄悄指向 Codex 池。
-`teamcodex` 则相反，它尊重那个变量，这正是 `teamcodex codex …` 能选中 Codex
-一侧的原因。两条契约都由 `test/entry-point.test.js` 锁定。注意上游的
-`@karpeleslab/teamclaude` 同样会安装一个 `teamclaude` 二进制，不要两个都装。
+`src/index.js` 会读 `args[0] === 'codex'` 并自己设置 `TEAMCLAUDE_PROVIDER=codex`，
+所以 `teamclaude codex server` 启动的是 **Codex** 代理，在 3457 上。参数优先于环境变量，
+即使显式写了 `TEAMCLAUDE_PROVIDER=anthropic`，也无法把 `codex` 子命令留在 Claude 一侧。
+
+两个二进制只差一点：`teamclaude` 在做任何事之前先清掉继承来的 `TEAMCLAUDE_PROVIDER`，
+所以残留在 shell 里的值、launchd plist，或者 `teamcodex run` 的子进程，都无法把一条普通的
+Claude 命令拖到 Codex 池上。`test/entry-point.test.js` 锁定的正是这个防护，以及未被清除时
+`index.js` 会尊重该变量这两点；它只跑 `status`，因此上面那条 `codex` 子命令路径并不在它的
+覆盖范围内。注意上游的 `@karpeleslab/teamclaude` 同样会安装一个 `teamclaude` 二进制，
+不要两个都装。
 
 账号请用**你自己的**。用你自己付费的 Claude 和 ChatGPT 订阅登录即可。本工具只是在
 你自己的登录之间轮换，不是用来让多人共用一个席位的。

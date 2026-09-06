@@ -42,8 +42,10 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # pick up your existing Claude Code login
-teamcodex codex import    # pick up your existing ~/.codex/auth.json
-teamclaude server         # start the proxy, then `teamclaude run`
+teamclaude server         # start the Claude proxy, then `teamclaude run`
+
+teamclaude codex import   # pick up your existing ~/.codex/auth.json
+teamclaude codex server   # the Codex pool is a separate proxy on its own port
 ```
 
 That installs the default branch. `npm i -g teamcodex` also works, but the
@@ -52,21 +54,30 @@ the registry build has none of the BYOK surface, Codex reset credits, account
 reauthentication, or the 401 cascade guard. Install from the repository unless
 you specifically want the older release.
 
-The package installs **two commands**, and which one you use decides which pool
-you talk to:
+The package installs **two commands**. What picks the pool is the `codex`
+subcommand, not the binary — the binary only decides the default when there is
+no `codex` subcommand:
 
 | Command | Pool | Config |
 |---|---|---|
-| `teamclaude …` | Claude (Anthropic) | `~/.config/teamclaude.json`, port 3456 |
-| `teamcodex codex …` | Codex (ChatGPT) | `~/.config/teamcodex.json`, port 3457 |
+| `teamclaude …` (no `codex`) | Claude (Anthropic) | `~/.config/teamclaude.json`, port 3456 |
+| `teamclaude codex …` or `teamcodex codex …` | Codex (ChatGPT) | `~/.config/teamcodex.json`, port 3457 |
+| `teamcodex …` (no `codex`) | whatever an inherited `TEAMCLAUDE_PROVIDER` says; Claude when unset | that provider's file |
 
-`teamclaude` exists to be unhijackable: it clears an inherited
-`TEAMCLAUDE_PROVIDER` before doing anything, so a value left in your shell, a
-launchd plist, or a `teamcodex run` child cannot silently point a Claude command
-at the Codex pool. `teamcodex` honours that variable instead, which is what makes
-`teamcodex codex …` select the Codex side. Both are pinned by
-`test/entry-point.test.js`. Note that upstream's `@karpeleslab/teamclaude`
-installs a `teamclaude` bin too — do not install both.
+`src/index.js` reads `args[0] === 'codex'` and sets `TEAMCLAUDE_PROVIDER=codex`
+itself, which is why `teamclaude codex server` starts the **Codex** proxy on
+3457. The argument wins over the environment, so even an explicit
+`TEAMCLAUDE_PROVIDER=anthropic` does not keep a `codex` subcommand on the Claude
+side.
+
+The two binaries differ in one thing: `teamclaude` deletes an inherited
+`TEAMCLAUDE_PROVIDER` before it does anything, so a value left in your shell, a
+launchd plist, or a `teamcodex run` child cannot drag a plain Claude command
+onto the Codex pool. That guard — and `index.js` honouring the variable when it
+is not cleared — is what `test/entry-point.test.js` pins; it exercises `status`
+only, so the `codex` subcommand path above is not covered by it. Note that
+upstream's `@karpeleslab/teamclaude` installs a `teamclaude` bin too — do not
+install both.
 
 Accounts are **yours**. Sign in with the Claude and ChatGPT subscriptions you
 pay for; this tool rotates between your own logins and is not a way to share one

@@ -42,8 +42,10 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # 기존 클로드 코드 로그인 가져오기
-teamcodex codex import    # 기존 ~/.codex/auth.json 가져오기
-teamclaude server         # 프록시 시작 후 `teamclaude run`
+teamclaude server         # 클로드 프록시 시작 후 `teamclaude run`
+
+teamclaude codex import   # 기존 ~/.codex/auth.json 가져오기
+teamclaude codex server   # Codex 풀은 자기 포트를 쓰는 별도 프록시입니다
 ```
 
 이렇게 하면 기본 브랜치가 설치됩니다. `npm i -g teamcodex`도 동작하지만 레지스트리에
@@ -51,19 +53,27 @@ teamclaude server         # 프록시 시작 후 `teamclaude run`
 BYOK 표면도, Codex 리셋 크레딧도, 계정 재인증도, 401 캐스케이드 가드도 들어 있지
 않습니다. 옛 릴리스가 꼭 필요한 게 아니라면 저장소에서 받으세요.
 
-이 패키지는 명령을 **두 개** 설치합니다. 어느 쪽을 쓰느냐가 어느 풀에 붙느냐를 정합니다.
+이 패키지는 명령을 **두 개** 설치합니다. 다만 풀을 고르는 건 바이너리가 아니라 `codex`
+서브커맨드입니다. 바이너리는 `codex` 서브커맨드가 없을 때의 기본값만 정합니다.
 
 | 명령 | 풀 | 설정 |
 |---|---|---|
-| `teamclaude …` | 클로드(Anthropic) | `~/.config/teamclaude.json`, 포트 3456 |
-| `teamcodex codex …` | Codex(ChatGPT) | `~/.config/teamcodex.json`, 포트 3457 |
+| `teamclaude …` (`codex` 없이) | 클로드(Anthropic) | `~/.config/teamclaude.json`, 포트 3456 |
+| `teamclaude codex …` 또는 `teamcodex codex …` | Codex(ChatGPT) | `~/.config/teamcodex.json`, 포트 3457 |
+| `teamcodex …` (`codex` 없이) | 상속된 `TEAMCLAUDE_PROVIDER`가 정함, 미설정이면 클로드 | 해당 provider의 파일 |
 
-`teamclaude`는 가로채이지 않는 것이 존재 이유입니다. 무슨 일을 하기 전에 상속된
-`TEAMCLAUDE_PROVIDER`를 먼저 지웁니다. 그래서 셸에 남은 값이나 launchd plist,
-`teamcodex run`의 자식 프로세스가 클로드 명령을 Codex 풀로 몰래 돌릴 수 없습니다.
-`teamcodex`는 반대로 그 변수를 존중하고, 그 덕분에 `teamcodex codex …`가 Codex 쪽을
-고릅니다. 두 계약 모두 `test/entry-point.test.js`가 고정합니다. 원본
-`@karpeleslab/teamclaude`도 `teamclaude` 바이너리를 설치하니 둘을 같이 깔지 마세요.
+`src/index.js`가 `args[0] === 'codex'`를 읽고 스스로 `TEAMCLAUDE_PROVIDER=codex`를
+세팅합니다. 그래서 `teamclaude codex server`는 **Codex** 프록시를 3457에 띄웁니다.
+인자가 환경변수를 이기기 때문에, `TEAMCLAUDE_PROVIDER=anthropic`을 명시해도 `codex`
+서브커맨드를 클로드 쪽에 붙잡아둘 수 없습니다.
+
+두 바이너리의 차이는 하나뿐입니다. `teamclaude`는 무슨 일을 하기 전에 상속된
+`TEAMCLAUDE_PROVIDER`를 지웁니다. 그래서 셸에 남은 값이나 launchd plist,
+`teamcodex run`의 자식 프로세스가 평범한 클로드 명령을 Codex 풀로 끌고 갈 수 없습니다.
+`test/entry-point.test.js`가 고정하는 건 그 가드와, 변수를 지우지 않았을 때 `index.js`가
+변수를 존중한다는 것 두 가지입니다. 이 테스트는 `status`만 실행하므로 위 `codex`
+서브커맨드 경로는 커버하지 않습니다. 원본 `@karpeleslab/teamclaude`도 `teamclaude`
+바이너리를 설치하니 둘을 같이 깔지 마세요.
 
 계정은 **본인 것**을 쓰세요. 본인이 결제한 클로드·ChatGPT 구독으로 로그인하면 됩니다.
 이 도구는 본인 로그인 사이를 오갈 뿐이고, 한 자리를 여럿이 나눠 쓰라고 만든 물건이
