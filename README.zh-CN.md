@@ -42,11 +42,14 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # 读取已有的 Claude Code 登录
-teamclaude server         # 启动 Claude 代理，然后执行 `teamclaude run`
-
 teamclaude codex import   # 读取已有的 ~/.codex/auth.json
-teamclaude codex server   # Codex 池是独立代理，用自己的端口
+
+teamclaude server         # 终端 1：Claude 代理（3456），会一直运行
+teamclaude codex server   # 终端 2：Codex 代理（3457），独立进程
 ```
+
+`server` 会在前台一直运行直到你停掉它，所以最后两行各需要一个终端。只启动你真正
+要用的那个池子即可，两者互相独立。
 
 这样安装的是默认分支。`npm i -g teamcodex` 也能用，但 registry 上的版本是
 **1.1.0（2026-07-29）**，而本分支已经走得远得多：那个版本里没有 BYOK 表面、

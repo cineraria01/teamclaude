@@ -42,11 +42,14 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # pick up your existing Claude Code login
-teamclaude server         # start the Claude proxy, then `teamclaude run`
-
 teamclaude codex import   # pick up your existing ~/.codex/auth.json
-teamclaude codex server   # the Codex pool is a separate proxy on its own port
+
+teamclaude server         # terminal 1: the Claude proxy on 3456, stays running
+teamclaude codex server   # terminal 2: the Codex proxy on 3457, its own process
 ```
+
+Each `server` runs in the foreground until you stop it, so the last two lines
+need a terminal each. Run only the pool you actually use — they are independent.
 
 That installs the default branch. `npm i -g teamcodex` also works, but the
 published release is **1.1.0 (2026-07-29)** and this branch is well past it, so

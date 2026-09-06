@@ -42,11 +42,14 @@
 npm i -g github:sangrokjung/teamclaude
 
 teamclaude import         # 기존 클로드 코드 로그인 가져오기
-teamclaude server         # 클로드 프록시 시작 후 `teamclaude run`
-
 teamclaude codex import   # 기존 ~/.codex/auth.json 가져오기
-teamclaude codex server   # Codex 풀은 자기 포트를 쓰는 별도 프록시입니다
+
+teamclaude server         # 터미널 1: 클로드 프록시(3456), 계속 떠 있습니다
+teamclaude codex server   # 터미널 2: Codex 프록시(3457), 별도 프로세스입니다
 ```
+
+`server`는 멈추기 전까지 포그라운드에서 도는 프로세스라 마지막 두 줄은 터미널이 하나씩
+필요합니다. 실제로 쓰는 풀만 띄우면 됩니다. 둘은 서로 독립입니다.
 
 이렇게 하면 기본 브랜치가 설치됩니다. `npm i -g teamcodex`도 동작하지만 레지스트리에
 올라간 판은 **1.1.0(2026-07-29)**이고 이 브랜치는 그보다 한참 앞서 있습니다. 그 판에는
