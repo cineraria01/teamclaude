@@ -171,7 +171,7 @@ upstream `v1.2.3`.
 Install this fork with one command:
 
 ```bash
-npm install -g teamcodex
+npm install -g github:sangrokjung/teamclaude
 ```
 
 From a local checkout, prefer
@@ -208,8 +208,8 @@ cannot read that path.
 Requires Node.js 18+.
 
 ```bash
-# Install from npm
-npm install -g teamcodex
+# Install the default branch (the npm release lags — see Install above)
+npm install -g github:sangrokjung/teamclaude
 
 # Add your first account (opens browser for OAuth)
 teamclaude login
@@ -944,14 +944,18 @@ The published npm release predates this surface and contains none of its code.
    proxy canonicalizes to `/v1/messages` before its normal routing.
 
 Confirm it is on: `/teamclaude/status` grows a `byok` object with `inflight`,
-`admitted`, `rejected`, and `injected` counters. Two different failures look
-similar here, so read the key itself:
+`admitted`, `rejected`, and `injected` counters. Three different failures collapse
+into a similar-looking status, so read the key **and** the log together:
 
-- `byok` is present but `null` — the surface refused to enable, and the reason is
-  on stderr as `[TeamClaude] BYOK surface disabled: ...`. Fix the config.
-- `byok` is **missing entirely** — your build predates the surface, so no amount of
-  config will produce it and no such stderr line can ever print. Reinstall from the
-  default branch.
+| `byok` in status | Log line | What it means |
+|---|---|---|
+| the key is **absent** | none possible | Your build predates the surface. No config will produce it. Reinstall from the default branch. |
+| `null` | `[TeamClaude] BYOK surface disabled: ...` | The config was rejected. The line names the reason: no `apiKey`, the `config.example.json` placeholder key, a key under 20 characters, or a `prefix` that is empty, root, or starts with a segment the proxy owns (`/v1`, `/teamclaude`). Fix that and restart. |
+| `null` | **no such line** | The proxy never saw an enabled block — either the config it loaded has no `byok`, or `enabled` is not exactly `true`. Both fall through silently by design. Check you edited the config that pool actually reads (`~/.config/teamclaude.json` for the Claude side, not `teamcodex.json`) and that you restarted after saving. |
+
+The third row is the common one and the easiest to misread as the second: an
+absent or `enabled`-less block produces `{ enabled: false, error: null }`, and the
+log only speaks when there is an `error` to report.
 
 What the proxy does on that surface, and nothing else:
 

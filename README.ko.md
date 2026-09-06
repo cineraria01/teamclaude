@@ -173,8 +173,8 @@ TeamClaude와 TeamCodex는 클라이언트가 항상 동일한 로컬 주소를 
 Node.js 18 이상이 필요합니다.
 
 ```bash
-# 설치
-npm install -g teamcodex
+# 기본 브랜치 설치 (npm 릴리스는 뒤처져 있습니다 — 위 "설치" 절 참조)
+npm install -g github:sangrokjung/teamclaude
 
 # Claude 계정 추가 — 브라우저 OAuth가 열립니다
 teamclaude login
@@ -577,12 +577,16 @@ surface→workspace topology가 모두 일치할 때만 동작합니다. 세션�
 3. 클라이언트의 base URL을 `http://127.0.0.1:3456/byok`로, API 키를 그 비밀값으로 지정합니다.
 
 켜졌는지는 `/teamclaude/status`에 `byok` 객체(`inflight`/`admitted`/`rejected`/`injected`)가 생기는지로
-확인합니다. 여기서 실패 두 가지가 비슷해 보이니 키 자체를 보십시오.
+확인합니다. 서로 다른 실패 세 가지가 비슷한 상태로 뭉치니 키와 로그를 **같이** 보십시오.
 
-- `byok`가 있는데 `null`이면 표면이 켜지길 거부한 것이고, 이유가 `[TeamClaude] BYOK surface disabled: ...`로
-  로그에 남습니다. 설정을 고치면 됩니다.
-- `byok` 키가 **아예 없으면** 빌드가 이 표면보다 앞선 판입니다. 설정을 어떻게 고쳐도 생기지 않고 그 로그도
-  찍히지 않습니다. 기본 브랜치에서 다시 설치하십시오.
+| status의 `byok` | 로그 | 의미 |
+|---|---|---|
+| 키가 **없음** | 나올 수 없음 | 빌드가 이 표면보다 앞선 판입니다. 설정으로는 생기지 않으니 기본 브랜치에서 다시 설치하십시오. |
+| `null` | `[TeamClaude] BYOK surface disabled: ...` | 설정이 거부됐습니다. 사유가 그 줄에 있습니다 — `apiKey` 없음, `config.example.json`의 placeholder 키, 20자 미만 키, 또는 비었거나 루트이거나 프록시가 쓰는 세그먼트(`/v1`·`/teamclaude`)로 시작하는 `prefix`. 고치고 재시작하십시오. |
+| `null` | 그런 줄 **없음** | 프록시가 켜진 블록을 본 적이 없습니다. 읽어들인 설정에 `byok`가 없거나, `enabled`가 정확히 `true`가 아닙니다. 둘 다 설계상 조용히 지나갑니다. 그 풀이 실제로 읽는 설정 파일을 고쳤는지(클로드 쪽은 `teamcodex.json`이 아니라 `~/.config/teamclaude.json`), 저장 후 재시작했는지 확인하십시오. |
+
+세 번째가 가장 흔하고 두 번째로 오해하기 쉽습니다. 블록이 없거나 `enabled`가 빠지면 `{ enabled: false, error: null }`이
+되고, 로그는 보고할 `error`가 있을 때만 말합니다.
 
 주의할 점:
 
