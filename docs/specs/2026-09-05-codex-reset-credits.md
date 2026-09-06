@@ -160,6 +160,27 @@
   second `forwardRequest`) and asserts each is detected, and a decoy source
   (strings, comments, templates, regex, shorthand/computed properties,
   member access) audits clean.
+- Cross-model pass on round 13 (Codex): four blind spots of the audit
+  itself, all reproduced — a default-value parameter `(retryCount = 0) =>`
+  read as a write (and it even satisfied the helper-write check), the
+  destructuring for-of/in targets `for ({ retryCount } of …)` /
+  `for ([retryCount] of …)` not classified as writes, a direct
+  `eval('retryCount = 7')` string kept opaque, and `/` after an object
+  literal's `}` or a postfix `++`/`--` mis-read as a regex start (silently
+  swallowing a write or a non-allowlisted call). Round 14 (test-only): the
+  tokenizer records whether each `{` opens an object literal or a block and
+  whether `++`/`--` is postfix, so `/` after an expression end is a
+  division; the classifier walks the enclosing brackets before reading a
+  trailing `=` as a write, treats parameter lists (arrow, function, method,
+  `catch`) and declared/assigned/for-of patterns as bindings or writes, and
+  tells an element's binding part from its default-value expression
+  (`(x = retryCount) => x` and `{ z = retryCount } = ctx` stay reads);
+  direct `eval` anywhere is a violation. Self-test: 34 mutants (adds
+  `forwardRequest.call`, optional call, `catch` parameter, `for (let …,
+  retryCount = 0; …)`, `key: target` patterns, nested for-of patterns,
+  method/async-arrow parameters, an assignment hidden in a parameter
+  default) and a decoy with object-literal division, postfix `++`, a regex
+  after a block, defaults, computed keys and a `catch` parameter.
 
 ## Incident / motivation
 
