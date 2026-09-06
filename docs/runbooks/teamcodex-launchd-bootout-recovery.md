@@ -64,7 +64,7 @@ Run in order:
 2. Is the service registered in the launchd domain?
 
    ```bash
-   launchctl print gui/501/com.qjc.teamcodex
+   launchctl print gui/$(id -u)/com.qjc.teamcodex
    ```
 
    `Could not find service` means the service is booted out. This is the
@@ -88,7 +88,7 @@ Run in order:
 ## Recovery
 
 ```bash
-launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.qjc.teamcodex.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.qjc.teamcodex.plist
 ```
 
 **Caution:** a bootstrap issued immediately after a bootout can fail with
@@ -99,7 +99,7 @@ down. Wait a few seconds and retry; the retry succeeds (measured 2026-09-01
 Then verify:
 
 ```bash
-launchctl print gui/501/com.qjc.teamcodex   # registered, has a PID
+launchctl print gui/$(id -u)/com.qjc.teamcodex   # registered, has a PID
 lsof -nP -iTCP:3457 -sTCP:LISTEN            # listener owned by the service
 curl -s http://127.0.0.1:3457/teamclaude/status | head -c 200
 ```

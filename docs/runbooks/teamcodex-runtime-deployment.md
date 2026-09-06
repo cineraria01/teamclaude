@@ -145,9 +145,9 @@ another session's uncommitted work.
    retry the bootstrap.
 
    ```bash
-   launchctl bootout gui/501/com.qjc.teamcodex
-   until ! launchctl print gui/501/com.qjc.teamcodex >/dev/null 2>&1; do sleep 0.5; done
-   launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.qjc.teamcodex.plist
+   launchctl bootout gui/$(id -u)/com.qjc.teamcodex
+   until ! launchctl print gui/$(id -u)/com.qjc.teamcodex >/dev/null 2>&1; do sleep 0.5; done
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.qjc.teamcodex.plist
    ```
 
    A bootstrap that still returns `rc=5` ("Input/output error") means launchd is

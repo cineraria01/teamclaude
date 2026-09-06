@@ -71,7 +71,10 @@ assert "\\" not in RECOVERY_MESSAGE, "RECOVERY_MESSAGE must not contain backslas
 CMUX = os.environ.get(
     "CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux"
 )
-REMOTE_HOST = os.environ.get("QJC_WORKER_HOST", "studio2")
+# No default: this is your own worker's SSH host, and a hostname baked in here
+# would point at whoever wrote the script. Unset means the remote health probe
+# below fails its own hostname validation and reports "not healthy".
+REMOTE_HOST = os.environ.get("QJC_WORKER_HOST", "")
 STATE_DIR = Path(
     os.environ.get("CODEX_WATCHDOG_STATE_DIR", str(Path.home() / ".codex" / "state"))
 )

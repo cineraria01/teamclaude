@@ -39,18 +39,52 @@
 ## Install
 
 ```bash
-npm i -g teamcodex
+npm i -g github:sangrokjung/teamclaude
 
-teamcodex import          # pick up your existing Claude Code login
-teamcodex codex import    # pick up your existing ~/.codex/auth.json
-teamcodex server          # start the proxy, then `teamcodex run`
+teamclaude import         # pick up your existing Claude Code login
+teamclaude codex import   # pick up your existing ~/.codex/auth.json
+
+teamclaude server         # terminal 1: the Claude proxy on 3456, stays running
+teamclaude codex server   # terminal 2: the Codex proxy on 3457, its own process
 ```
 
-The command is `teamcodex`. This package deliberately does not install a `teamclaude`
-binary so it cannot collide with upstream's package of that name.
+Each `server` runs in the foreground until you stop it, so the last two lines
+need a terminal each. Run only the pool you actually use — they are independent.
 
-Prefer installing straight from the repository? `npm i -g github:sangrokjung/teamclaude`
-works too and always tracks the default branch.
+That installs the default branch. `npm i -g teamcodex` also works, but the
+published release is **1.1.0 (2026-07-29)** and this branch is well past it, so
+the registry build has none of the BYOK surface, Codex reset credits, account
+reauthentication, or the 401 cascade guard. Install from the repository unless
+you specifically want the older release.
+
+The package installs **two commands**. What picks the pool is the `codex`
+subcommand, not the binary — the binary only decides the default when there is
+no `codex` subcommand:
+
+| Command | Pool | Config |
+|---|---|---|
+| `teamclaude …` (no `codex`) | Claude (Anthropic) | `~/.config/teamclaude.json`, port 3456 |
+| `teamclaude codex …` or `teamcodex codex …` | Codex (ChatGPT) | `~/.config/teamcodex.json`, port 3457 |
+| `teamcodex …` (no `codex`) | whatever an inherited `TEAMCLAUDE_PROVIDER` says; Claude when unset | that provider's file |
+
+`src/index.js` reads `args[0] === 'codex'` and sets `TEAMCLAUDE_PROVIDER=codex`
+itself, which is why `teamclaude codex server` starts the **Codex** proxy on
+3457. The argument wins over the environment, so even an explicit
+`TEAMCLAUDE_PROVIDER=anthropic` does not keep a `codex` subcommand on the Claude
+side.
+
+The two binaries differ in one thing: `teamclaude` deletes an inherited
+`TEAMCLAUDE_PROVIDER` before it does anything, so a value left in your shell, a
+launchd plist, or a `teamcodex run` child cannot drag a plain Claude command
+onto the Codex pool. That guard — and `index.js` honouring the variable when it
+is not cleared — is what `test/entry-point.test.js` pins; it exercises `status`
+only, so the `codex` subcommand path above is not covered by it. Note that
+upstream's `@karpeleslab/teamclaude` installs a `teamclaude` bin too — do not
+install both.
+
+Accounts are **yours**. Sign in with the Claude and ChatGPT subscriptions you
+pay for; this tool rotates between your own logins and is not a way to share one
+seat with other people.
 
 ## Is this against the Terms of Service?
 
@@ -58,11 +92,16 @@ No. This does not share, resell, or pool accounts between people.
 
 > **One exception, added by this fork.** The opt-in BYOK surface (see *BYOK surface* under Configuration) relays a **third-party** client's request after normalizing it to the shape the upstream accepts from a first-party client. That is outside the "same client, your own sessions" reasoning below. It ships off, and enabling it is your decision and your risk.
 
-It routes **your own** authenticated sessions from **one machine**, which is exactly
-what you would do by switching accounts by hand, minus the manual re-login. Every
-request is signed with that account's own OAuth token, and nothing is proxied on behalf
-of third parties. Credentials are stored locally and only ever sent to the vendor's own
-endpoints, exactly as the CLI would send them. No third party sees them.
+It routes **your own** authenticated sessions, which is exactly what you would do by
+switching accounts by hand, minus the manual re-login. Every request is signed with
+that account's own OAuth token, and nothing is proxied on behalf of third parties.
+Credentials are stored locally and only ever sent to the vendor's own endpoints,
+exactly as the CLI would send them. No third party sees them.
+
+The pool lives on one machine. Reaching it from another device you own — over a
+private tunnel, say — is still your own sessions on your own accounts, and the
+runbooks assume that setup. What is not supported is a second *person*: the line
+is whose subscription signs the request, not how many of your machines dial in.
 
 It does not increase your quota and it does not bypass any limit. It stops the quota
 you already paid for from expiring unused.
@@ -146,7 +185,7 @@ upstream `v1.2.3`.
 Install this fork with one command:
 
 ```bash
-npm install -g teamcodex
+npm install -g github:sangrokjung/teamclaude
 ```
 
 From a local checkout, prefer
@@ -183,8 +222,8 @@ cannot read that path.
 Requires Node.js 18+.
 
 ```bash
-# Install from npm
-npm install -g teamcodex
+# Install the default branch (the npm release lags — see Install above)
+npm install -g github:sangrokjung/teamclaude
 
 # Add your first account (opens browser for OAuth)
 teamclaude login
@@ -880,8 +919,16 @@ arrive in the shape it expects from a first-party client, and it rejects a
 request carrying browser-context headers. A client cannot fix either from its
 own provider config, so the proxy does it — **only** on a dedicated path prefix.
 
-Read the Terms of Service note near the top of this README before enabling this.
-Unlike the rest of the proxy, this surface relays a third-party client's traffic.
+Two things to settle before you turn it on.
+
+Read the Terms of Service note near the top of this README. Unlike the rest of the
+proxy, this surface relays a third-party client's traffic. And the pool it hands
+that client is **your own subscriptions** — this surface exists so your browser or
+editor can use the accounts you already pay for, not so a URL and a key can be
+passed around. Anyone you give both to is spending your quota under your logins.
+
+It also needs a build from the default branch: `npm i -g github:sangrokjung/teamclaude`.
+The published npm release predates this surface and contains none of its code.
 
 ```json
 {
@@ -898,17 +945,31 @@ Unlike the rest of the proxy, this surface relays a third-party client's traffic
 1. Replace `apiKey` with your own secret — generate one with
    `openssl rand -base64 24`. The placeholder above is **refused on purpose**, so
    copy-pasting this block as-is leaves the surface off.
-2. Run `teamclaude restart`. The BYOK config is resolved once when the server
+2. Match `minUsableAccounts` to your pool. It is a floor that BYOK must clear
+   *before* it is served, so the default of `2` rejects every BYOK request while
+   you have one usable account — the surface looks broken when it is working as
+   configured. With a small pool set it to `1`, or `0` to serve regardless; you
+   trade away the headroom that keeps Claude Code unaffected.
+3. Run `teamclaude restart`. The BYOK config is resolved once when the server
    starts; the TUI **R** reload only re-syncs accounts and will leave the surface
    off.
-3. Point the client at `http://127.0.0.1:3456/byok` with that secret as its API
+4. Point the client at `http://127.0.0.1:3456/byok` with that secret as its API
    key. An Anthropic-Messages client then requests `/byok/v1/messages`, which the
    proxy canonicalizes to `/v1/messages` before its normal routing.
 
 Confirm it is on: `/teamclaude/status` grows a `byok` object with `inflight`,
-`admitted`, `rejected`, and `injected` counters. If it stays `null`, the surface
-refused to enable and the reason is on stderr as
-`[TeamClaude] BYOK surface disabled: ...`.
+`admitted`, `rejected`, and `injected` counters. Three different failures collapse
+into a similar-looking status, so read the key **and** the log together:
+
+| `byok` in status | Log line | What it means |
+|---|---|---|
+| the key is **absent** | none possible | Your build predates the surface. No config will produce it. Reinstall from the default branch. |
+| `null` | `[TeamClaude] BYOK surface disabled: ...` | The config was rejected. The line names the reason: no `apiKey`, the `config.example.json` placeholder key, a key under 20 characters, or a `prefix` that is empty, root, or starts with a segment the proxy owns (`/v1`, `/teamclaude`). Fix that and restart. |
+| `null` | **no such line** | The proxy never saw an enabled block — either the config it loaded has no `byok`, or `enabled` is not exactly `true`. Both fall through silently by design. Check you edited the config that pool actually reads (`~/.config/teamclaude.json` for the Claude side, not `teamcodex.json`) and that you restarted after saving. |
+
+The third row is the common one and the easiest to misread as the second: an
+absent or `enabled`-less block produces `{ enabled: false, error: null }`, and the
+log only speaks when there is an `error` to report.
 
 What the proxy does on that surface, and nothing else:
 

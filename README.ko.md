@@ -39,27 +39,62 @@
 ## 설치
 
 ```bash
-npm i -g teamcodex
+npm i -g github:sangrokjung/teamclaude
 
-teamcodex import          # 기존 클로드 코드 로그인 가져오기
-teamcodex codex import    # 기존 ~/.codex/auth.json 가져오기
-teamcodex server          # 프록시 시작 후 `teamcodex run`
+teamclaude import         # 기존 클로드 코드 로그인 가져오기
+teamclaude codex import   # 기존 ~/.codex/auth.json 가져오기
+
+teamclaude server         # 터미널 1: 클로드 프록시(3456), 계속 떠 있습니다
+teamclaude codex server   # 터미널 2: Codex 프록시(3457), 별도 프로세스입니다
 ```
 
-명령은 `teamcodex` 하나입니다. `teamclaude` 바이너리는 일부러 설치하지 않습니다. 같은
-이름을 쓰는 원본 패키지와 충돌하지 않기 위해서입니다.
+`server`는 멈추기 전까지 포그라운드에서 도는 프로세스라 마지막 두 줄은 터미널이 하나씩
+필요합니다. 실제로 쓰는 풀만 띄우면 됩니다. 둘은 서로 독립입니다.
 
-저장소에서 바로 받고 싶다면 `npm i -g github:sangrokjung/teamclaude`도 동작합니다.
-이쪽은 항상 기본 브랜치를 따라갑니다.
+이렇게 하면 기본 브랜치가 설치됩니다. `npm i -g teamcodex`도 동작하지만 레지스트리에
+올라간 판은 **1.1.0(2026-07-29)**이고 이 브랜치는 그보다 한참 앞서 있습니다. 그 판에는
+BYOK 표면도, Codex 리셋 크레딧도, 계정 재인증도, 401 캐스케이드 가드도 들어 있지
+않습니다. 옛 릴리스가 꼭 필요한 게 아니라면 저장소에서 받으세요.
+
+이 패키지는 명령을 **두 개** 설치합니다. 다만 풀을 고르는 건 바이너리가 아니라 `codex`
+서브커맨드입니다. 바이너리는 `codex` 서브커맨드가 없을 때의 기본값만 정합니다.
+
+| 명령 | 풀 | 설정 |
+|---|---|---|
+| `teamclaude …` (`codex` 없이) | 클로드(Anthropic) | `~/.config/teamclaude.json`, 포트 3456 |
+| `teamclaude codex …` 또는 `teamcodex codex …` | Codex(ChatGPT) | `~/.config/teamcodex.json`, 포트 3457 |
+| `teamcodex …` (`codex` 없이) | 상속된 `TEAMCLAUDE_PROVIDER`가 정함, 미설정이면 클로드 | 해당 provider의 파일 |
+
+`src/index.js`가 `args[0] === 'codex'`를 읽고 스스로 `TEAMCLAUDE_PROVIDER=codex`를
+세팅합니다. 그래서 `teamclaude codex server`는 **Codex** 프록시를 3457에 띄웁니다.
+인자가 환경변수를 이기기 때문에, `TEAMCLAUDE_PROVIDER=anthropic`을 명시해도 `codex`
+서브커맨드를 클로드 쪽에 붙잡아둘 수 없습니다.
+
+두 바이너리의 차이는 하나뿐입니다. `teamclaude`는 무슨 일을 하기 전에 상속된
+`TEAMCLAUDE_PROVIDER`를 지웁니다. 그래서 셸에 남은 값이나 launchd plist,
+`teamcodex run`의 자식 프로세스가 평범한 클로드 명령을 Codex 풀로 끌고 갈 수 없습니다.
+`test/entry-point.test.js`가 고정하는 건 그 가드와, 변수를 지우지 않았을 때 `index.js`가
+변수를 존중한다는 것 두 가지입니다. 이 테스트는 `status`만 실행하므로 위 `codex`
+서브커맨드 경로는 커버하지 않습니다. 원본 `@karpeleslab/teamclaude`도 `teamclaude`
+바이너리를 설치하니 둘을 같이 깔지 마세요.
+
+계정은 **본인 것**을 쓰세요. 본인이 결제한 클로드·ChatGPT 구독으로 로그인하면 됩니다.
+이 도구는 본인 로그인 사이를 오갈 뿐이고, 한 자리를 여럿이 나눠 쓰라고 만든 물건이
+아닙니다.
 
 ## 이용약관에 문제가 없나요?
 
 없습니다. 이 도구는 계정을 여러 사람이 나눠 쓰거나, 재판매하거나, 남에게 중계하지 않습니다.
 
-**본인이 가진 계정**을 **본인 머신에서** 순환시킬 뿐입니다. 손으로 로그인을 갈아끼우는
+**본인이 가진 계정**을 순환시킬 뿐입니다. 손으로 로그인을 갈아끼우는
 동작에서 수동 재로그인만 없앤 것이고, 요청마다 그 계정의 OAuth 토큰이 그대로 실립니다.
 크리덴셜은 로컬에 보관되고, CLI가 원래 보내던 곳인 벤더 API로만 전송됩니다. 제3자는
 크리덴셜을 보지 못합니다.
+
+풀은 머신 한 대에서 돕니다. 본인이 쓰는 다른 기기에서 사설 터널 같은 경로로 그 풀에
+붙는 것도 결국 본인 계정으로 본인 세션을 쓰는 것이고, 런북도 그런 구성을 전제합니다.
+지원하지 않는 쪽은 두 번째 **사람**입니다. 기준은 머신이 몇 대냐가 아니라 누구의 구독이
+요청에 서명하느냐입니다.
 
 쿼터를 늘려주지도, 한도를 우회하지도 않습니다. 이미 결제한 쿼터가 그냥 소멸하는 것을
 막아줄 뿐입니다.
@@ -136,6 +171,7 @@ TeamClaude와 TeamCodex는 클라이언트가 항상 동일한 로컬 주소를 
 - **동시 요청 분산** — 계정별 동시 요청 한도를 넘는 트래픽은 다른 계정으로 자동 분산합니다.
 - **Fable/Mythos 계정 우선** — 모델별 window가 유효 기간 내이고, 유한한 값으로 측정됐으며, 한도에 도달한(fresh·finite·full) 계정만 그 요청에서 제외합니다. 미측정·만료·사용 가능 계정은 원래 모델로 먼저 시도하고, Opus/Sonnet/Haiku 자격은 유지합니다.
 - **모델 fallback** — 캐시에 기록된 general-available 계정이 모두 해당 모델에서 fresh-full이거나, labeled model-tier 429가 실시간으로 eligible 계정 전체에서 확인되면 대체 모델로 전환합니다. Claude Code advisor 요청은 root `tools[]`의 `advisor_*` 항목에 있는 중첩 모델을 기준으로 라우팅하며, fallback도 top-level executor가 아닌 해당 중첩 `model`만 바꿉니다. label 없는 global 429와 단순 local cap·동시성 queue는 모델을 바꾸지 않습니다.
+- **BYOK 표면 (fork 전용)** — `/byok` 경로 prefix를 켜면 "자기 키를 넣어 쓰는" 서드파티 클라이언트(에디터 플러그인, AI 브라우저, 자체 스크립트)도 이 풀을 쓸 수 있습니다. 프록시가 업스트림이 1차 클라이언트에게 요구하는 형태로 요청을 맞춰 주고 거부 대상 브라우저 헤더를 떼는 동안, `/v1/*`로 오는 Claude Code 트래픽은 바이트 단위로 그대로입니다. 설정하지 않으면 꺼진 상태이고, 켜기 전에 이용약관 절을 읽으십시오.
 - **실시간 TUI** — 계정 상태, 세션·주간 사용량, 초기화 시간, CPU·RAM을 표시합니다.
 - **계정 수동 제어** — enable, disable, switch, priority 순서를 CLI와 TUI에서 변경할 수 있습니다.
 - **재시작 후 상태 복원** — 사용량과 throttle 상태를 별도 quota 파일에 저장합니다.
@@ -150,8 +186,8 @@ TeamClaude와 TeamCodex는 클라이언트가 항상 동일한 로컬 주소를 
 Node.js 18 이상이 필요합니다.
 
 ```bash
-# 설치
-npm install -g teamcodex
+# 기본 브랜치 설치 (npm 릴리스는 뒤처져 있습니다 — 위 "설치" 절 참조)
+npm install -g github:sangrokjung/teamclaude
 
 # Claude 계정 추가 — 브라우저 OAuth가 열립니다
 teamclaude login
@@ -525,8 +561,15 @@ surface→workspace topology가 모두 일치할 때만 동작합니다. 세션�
 1차 클라이언트에게 기대하는 형태가 아닌 요청과, 브라우저 컨텍스트 헤더가 붙은 요청을 거부하기 때문입니다.
 클라이언트가 자기 설정으로는 둘 다 고칠 수 없어서, 프록시가 **전용 경로 prefix에서만** 대신 맞춰 줍니다.
 
-켜기 전에 이 문서 앞쪽 "이용약관에 문제가 없나요?" 절을 읽으십시오. 이 표면은 프록시의 다른 부분과 달리
-**서드파티 클라이언트의 트래픽을 중계**합니다.
+켜기 전에 정리할 게 두 가지 있습니다.
+
+먼저 이 문서 앞쪽 "이용약관에 문제가 없나요?" 절을 읽으십시오. 이 표면은 프록시의 다른 부분과 달리
+**서드파티 클라이언트의 트래픽을 중계**합니다. 그리고 그 클라이언트에게 넘기는 풀은 **본인 구독**입니다.
+이 표면은 이미 결제한 계정을 본인 브라우저나 에디터에서도 쓰라고 있는 것이지, URL과 키를 돌려 쓰라고
+있는 게 아닙니다. 둘 다 받은 사람은 누구든 본인 로그인으로 본인 쿼터를 씁니다.
+
+그리고 기본 브랜치 빌드가 필요합니다(`npm i -g github:sangrokjung/teamclaude`). npm에 올라간 릴리스는
+이 표면보다 앞선 판이라 관련 코드가 아예 없습니다.
 
 ```json
 {
@@ -547,7 +590,16 @@ surface→workspace topology가 모두 일치할 때만 동작합니다. 세션�
 3. 클라이언트의 base URL을 `http://127.0.0.1:3456/byok`로, API 키를 그 비밀값으로 지정합니다.
 
 켜졌는지는 `/teamclaude/status`에 `byok` 객체(`inflight`/`admitted`/`rejected`/`injected`)가 생기는지로
-확인합니다. `null`이면 켜지지 않은 것이고, 이유가 `[TeamClaude] BYOK surface disabled: ...`로 로그에 남습니다.
+확인합니다. 서로 다른 실패 세 가지가 비슷한 상태로 뭉치니 키와 로그를 **같이** 보십시오.
+
+| status의 `byok` | 로그 | 의미 |
+|---|---|---|
+| 키가 **없음** | 나올 수 없음 | 빌드가 이 표면보다 앞선 판입니다. 설정으로는 생기지 않으니 기본 브랜치에서 다시 설치하십시오. |
+| `null` | `[TeamClaude] BYOK surface disabled: ...` | 설정이 거부됐습니다. 사유가 그 줄에 있습니다 — `apiKey` 없음, `config.example.json`의 placeholder 키, 20자 미만 키, 또는 비었거나 루트이거나 프록시가 쓰는 세그먼트(`/v1`·`/teamclaude`)로 시작하는 `prefix`. 고치고 재시작하십시오. |
+| `null` | 그런 줄 **없음** | 프록시가 켜진 블록을 본 적이 없습니다. 읽어들인 설정에 `byok`가 없거나, `enabled`가 정확히 `true`가 아닙니다. 둘 다 설계상 조용히 지나갑니다. 그 풀이 실제로 읽는 설정 파일을 고쳤는지(클로드 쪽은 `teamcodex.json`이 아니라 `~/.config/teamclaude.json`), 저장 후 재시작했는지 확인하십시오. |
+
+세 번째가 가장 흔하고 두 번째로 오해하기 쉽습니다. 블록이 없거나 `enabled`가 빠지면 `{ enabled: false, error: null }`이
+되고, 로그는 보고할 `error`가 있을 때만 말합니다.
 
 주의할 점:
 

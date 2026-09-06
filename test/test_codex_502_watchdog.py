@@ -113,7 +113,7 @@ class DetectWaiting502Tests(unittest.TestCase):
     def test_exact_upstream_overloaded_503_at_prompt_matches(self) -> None:
         screen = (
             f"• 이전 작업\n\n{UPSTREAM_OVERLOADED_503_ERROR}\n\n› \n\n"
-            "  gpt-5.6-sol high · ~/qjc-agent-server/workspaces/sinsang-ax"
+            "  gpt-5.6-sol high · ~/qjc-agent-server/workspaces/example-project"
         )
         match = watchdog.detect_waiting_502(screen, "session-upstream-503")
         self.assertIsNotNone(match)

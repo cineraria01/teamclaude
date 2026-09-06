@@ -15,7 +15,6 @@ language of its file.
 | [`plans/`](plans/) | The implementation plan paired with a spec of the same date and topic: scope, explicit non-scope, task checklist |
 | [`runbooks/`](runbooks/) | Symptom-first operational procedures. Read-only diagnosis first, recovery second, prevention last |
 | [`evidence/`](evidence/) | Frozen excerpts with source SHA-256 hashes, so an independent reviewer can check a claim without pulling whole files into a review bundle |
-| [`agent-handoffs/`](agent-handoffs/) | State handed from one agent session to the next: goal, current conclusion, what was verified, what was deliberately not touched. `current.md` is the live one |
 | [`assets/`](assets/) | Images referenced by the READMEs (hero, dashboard screenshot) |
 
 Operational context for the production deployment is summarized in the
@@ -46,3 +45,7 @@ Operational context for the production deployment is summarized in the
   separate read-only diagnosis from anything that mutates state.
 - Nothing in this directory contains account addresses, tokens, or proxy API
   keys. Use placeholders such as `account-a@example.com` when adding examples.
+- The same rule covers anything that identifies whoever runs the proxy: how many
+  accounts are in a pool, customer or project names, other machines' hostnames
+  and home directories, private branch names, and session UUIDs. Runbooks that
+  grew out of a real incident keep the procedure and drop the identifiers.

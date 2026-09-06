@@ -39,24 +39,61 @@
 ## 安装
 
 ```bash
-npm i -g teamcodex
+npm i -g github:sangrokjung/teamclaude
 
-teamcodex import          # 读取已有的 Claude Code 登录
-teamcodex codex import    # 读取已有的 ~/.codex/auth.json
-teamcodex server          # 启动代理，然后执行 `teamcodex run`
+teamclaude import         # 读取已有的 Claude Code 登录
+teamclaude codex import   # 读取已有的 ~/.codex/auth.json
+
+teamclaude server         # 终端 1：Claude 代理（3456），会一直运行
+teamclaude codex server   # 终端 2：Codex 代理（3457），独立进程
 ```
 
-命令只有 `teamcodex` 一个。本包刻意不安装 `teamclaude` 二进制，以免与同名的上游包冲突。
+`server` 会在前台一直运行直到你停掉它，所以最后两行各需要一个终端。只启动你真正
+要用的那个池子即可，两者互相独立。
 
-想直接从仓库安装也可以：`npm i -g github:sangrokjung/teamclaude`，这种方式始终跟随默认分支。
+这样安装的是默认分支。`npm i -g teamcodex` 也能用，但 registry 上的版本是
+**1.1.0（2026-07-29）**，而本分支已经走得远得多：那个版本里没有 BYOK 表面、
+Codex 重置额度、账户重新认证，也没有 401 级联防护。除非你确实需要那个旧版本，
+否则请从仓库安装。
+
+本包会装上**两个命令**。但决定用哪个池子的是 `codex` 子命令，不是二进制本身——
+二进制只决定没有 `codex` 子命令时的默认值：
+
+| 命令 | 池子 | 配置 |
+|---|---|---|
+| `teamclaude …`（不带 `codex`） | Claude（Anthropic） | `~/.config/teamclaude.json`，端口 3456 |
+| `teamclaude codex …` 或 `teamcodex codex …` | Codex（ChatGPT） | `~/.config/teamcodex.json`，端口 3457 |
+| `teamcodex …`（不带 `codex`） | 由继承来的 `TEAMCLAUDE_PROVIDER` 决定，未设置时为 Claude | 对应 provider 的文件 |
+
+`src/index.js` 会读 `args[0] === 'codex'` 并自己设置 `TEAMCLAUDE_PROVIDER=codex`，
+所以 `teamclaude codex server` 启动的是 **Codex** 代理，在 3457 上。参数优先于环境变量，
+即使显式写了 `TEAMCLAUDE_PROVIDER=anthropic`，也无法把 `codex` 子命令留在 Claude 一侧。
+
+两个二进制只差一点：`teamclaude` 在做任何事之前先清掉继承来的 `TEAMCLAUDE_PROVIDER`，
+所以残留在 shell 里的值、launchd plist，或者 `teamcodex run` 的子进程，都无法把一条普通的
+Claude 命令拖到 Codex 池上。`test/entry-point.test.js` 锁定的正是这个防护，以及未被清除时
+`index.js` 会尊重该变量这两点；它只跑 `status`，因此上面那条 `codex` 子命令路径并不在它的
+覆盖范围内。注意上游的 `@karpeleslab/teamclaude` 同样会安装一个 `teamclaude` 二进制，
+不要两个都装。
+
+账号请用**你自己的**。用你自己付费的 Claude 和 ChatGPT 订阅登录即可。本工具只是在
+你自己的登录之间轮换，不是用来让多人共用一个席位的。
 
 ## 关于使用条款
 
 **本项目仅用于管理你自己拥有的账号，不支持也不鼓励账号共享、代充或转售。**
 
-它做的事情，就是把你手动切换自己账号的动作自动化。所有请求都在你自己的机器上发出，
-每个请求都带该账号自身的 OAuth token，也不会为第三方做任何中转。凭证保存在本地，
-只会发往官方 API，与 CLI 原本的发送目标完全相同，第三方无法接触到它。
+> **本 fork 增加了一个例外。** 可选的 BYOK 表面（见下文*BYOK 表面*）会把**第三方**
+> 客户端的请求整形成上游对一方客户端所期待的形状后转发。这超出了下面"同一客户端、
+> 你自己的会话"的论证范围。它默认关闭，是否启用由你自己决定，风险也由你承担。
+
+它做的事情，就是把你手动切换自己账号的动作自动化。每个请求都带该账号自身的
+OAuth token，也不会为第三方做任何中转。凭证保存在本地，只会发往官方 API，
+与 CLI 原本的发送目标完全相同，第三方无法接触到它。
+
+池子跑在一台机器上。从你自己的另一台设备连过去（比如走私有隧道）依然是你自己的
+账号、你自己的会话，runbook 也是按这种拓扑写的。不支持的是第二个**人**：界线在于
+请求由谁的订阅签名，而不在于你有几台机器接进来。
 
 它不会增加你的额度，也不会绕过任何限制。它只是让你已经付费的额度不至于白白过期。
 
@@ -125,6 +162,7 @@ AI 编程订阅的会话限额和每周限额按账户分别计算。某个账�
 - **并发请求分散** — 超出单账户并发上限的流量自动分散到其他账户。
 - **Fable/Mythos 账户优先** — 只有模型级窗口仍在有效期内、数值有限且已达到上限（fresh、finite、full）的账户才会对当前请求被跳过；未测量、已过期或仍可用的账户会先尝试原模型，Opus/Sonnet/Haiku 的资格不受影响。
 - **模型 fallback** — 当缓存中的 general-available 账户对该模型全部 fresh-full，或实时 labeled model-tier 429 已覆盖所有 eligible 账户时切换到备用模型。Claude Code advisor 请求以 root `tools[]` 中 `advisor_*` 项的嵌套模型作为路由依据，fallback 也只改写该嵌套 `model`，不会改动 top-level executor；无 label 的 global 429、local cap 或并发 queue 都不会更换模型。
+- **BYOK 表面（本 fork 独有）** — 开启 `/byok` 路径前缀后，支持"自带 key"的第三方客户端（编辑器插件、AI 浏览器、你自己的脚本）也能使用这个池子。代理会把请求整形成上游对一方客户端所要求的形状，并去掉会被拒绝的浏览器上下文头，而走 `/v1/*` 的 Claude Code 流量字节完全不变。不配置就是关闭状态，启用前请先读使用条款一节。
 - **实时 TUI** — 显示账户状态、会话与每周用量、重置时间以及 CPU、内存。
 - **手动账户控制** — 通过 CLI 或 TUI 执行 enable、disable、switch 和 priority。
 - **重启后恢复状态** — 将用量和 throttle 状态保存在独立的 quota 文件中。
@@ -139,8 +177,8 @@ AI 编程订阅的会话限额和每周限额按账户分别计算。某个账�
 需要 Node.js 18 或更高版本。
 
 ```bash
-# 安装
-npm install -g teamcodex
+# 安装默认分支（npm 上的版本较旧——见上文"安装"一节）
+npm install -g github:sangrokjung/teamclaude
 
 # 添加 Claude 账户——会打开浏览器 OAuth
 teamclaude login
@@ -324,6 +362,68 @@ claim，因此 supervisor 重启或 workspace 创建结果不确定时也不会�
 同一会话。
 
 缓冲区、超时上限等完整配置项请参阅[英文 README](README.md#configuration)。
+
+### BYOK 表面（本 fork 独有）
+
+支持"自带 key"（BYOK）的第三方客户端无法走本代理的常规路径。上游会拒绝两类请求：
+形状不符合一方客户端预期的，以及带浏览器上下文头的。客户端在自己的 provider 配置里
+无法解决其中任何一个，所以代理**只在一个专用路径前缀上**替它补齐。
+
+启用前先定两件事。
+
+一是读本文档前面的"关于使用条款"。与代理的其他部分不同，这个表面转发的是第三方
+客户端的流量。二是它交给那个客户端的池子，是**你自己的订阅**。这个表面的存在，是为了
+让你的浏览器或编辑器也能用上你已经付费的账号，而不是为了把一个 URL 加一把 key 传来
+传去。拿到这两样的人，花的都是你自己登录下的额度。
+
+它还需要默认分支的构建（`npm i -g github:sangrokjung/teamclaude`）。npm 上的发布版本
+早于这个表面，里面根本没有相关代码。
+
+```json
+{
+  "byok": {
+    "enabled": true,
+    "prefix": "/byok",
+    "apiKey": "byok-change-me-to-a-secret",
+    "minUsableAccounts": 2,
+    "maxConcurrent": 2
+  }
+}
+```
+
+1. 把 `apiKey` 换成你自己的密钥（`openssl rand -base64 24`）。上面这个占位值是
+   **刻意会被拒绝**的，原样复制粘贴只会让表面保持关闭。
+2. 让 `minUsableAccounts` 与你的池子匹配。它是 BYOK 被放行前必须越过的下限，
+   所以在只有一个可用账号时，默认值 `2` 会拒绝掉每一个 BYOK 请求，看起来像坏了，
+   其实是按配置工作。池子小就设成 `1`，或者设成 `0` 表示无条件放行，代价是失去
+   那层保护 Claude Code 不受影响的余量。
+3. 执行 `teamclaude restart`。BYOK 配置只在服务器启动时解析一次，TUI 的 **R** 重载
+   只会重新同步账号，表面仍然是关的。
+4. 把客户端的 base URL 指向 `http://127.0.0.1:3456/byok`，API key 填那个密钥。
+
+是否生效看 `/teamclaude/status` 里有没有 `byok` 对象
+（`inflight`/`admitted`/`rejected`/`injected`）。三种不同的失败会收敛成很相似的状态，
+所以要把 key 和日志**一起**看：
+
+| status 里的 `byok` | 日志 | 含义 |
+|---|---|---|
+| 整个键**不存在** | 不可能出现 | 你的构建早于这个表面。改配置不会让它出现，请从默认分支重新安装。 |
+| `null` | `[TeamClaude] BYOK surface disabled: ...` | 配置被拒绝了。那一行会写明原因：没有 `apiKey`、用了 `config.example.json` 里的占位 key、key 不足 20 字符，或者 `prefix` 为空、是根路径、或以代理自己占用的段（`/v1`、`/teamclaude`）开头。改完重启即可。 |
+| `null` | **没有这行** | 代理从来没看到一个已启用的块——要么它读到的配置里没有 `byok`，要么 `enabled` 不是严格的 `true`。这两种情况按设计都会静默跳过。请确认你改的是那个池子真正读取的配置文件（Claude 一侧是 `~/.config/teamclaude.json`，不是 `teamcodex.json`），并且保存后重启了。 |
+
+第三行最常见，也最容易被误读成第二行：块缺失或没写 `enabled` 时得到的是
+`{ enabled: false, error: null }`，而日志只在有 `error` 可报时才出声。
+
+需要留意的几点：
+
+- 现有的 Claude Code 流量走 `/v1/*`，**在结构上进不了**这条整形通道，字节完全不变。
+- 预检对任何 origin 都会响应，但真实响应里没有 CORS 头，所以浏览器渲染进程的
+  `fetch()` 仍然读不到结果。请从后台进程、扩展或主进程调用。
+- 这个表面前面挂的是真实订阅凭证，所以过短的 key 和默认 key 会被拒绝，
+  控制平面路径一律 404。
+
+完整行为与安全护栏以[英文 README](README.md#byok-surface-fork) 的 *BYOK surface (fork)*
+一节为准，Aside 浏览器的完整接入示例也在那里。
 
 ## 工作原理
 

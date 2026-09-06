@@ -237,7 +237,7 @@ The pool cannot manufacture quota. There are three real moves.
 
 | Option | Action | Cost | Time to effect |
 |---|---|---|---|
-| Add or renew a subscription account | `teamcodex codex login` (browser flow), then `launchctl kickstart -k gui/501/com.qjc.teamcodex` so the daemon picks the account up | One more ChatGPT subscription, or reinstating a lapsed one | Minutes, bounded by the browser login and the restart |
+| Add or renew a subscription account | `teamcodex codex login` (browser flow), then `launchctl kickstart -k gui/$(id -u)/com.qjc.teamcodex` so the daemon picks the account up | One more ChatGPT subscription, or reinstating a lapsed one | Minutes, bounded by the browser login and the restart |
 | Disable a downgraded or cancelled account | `teamcodex codex disable <name>` | None. The account was contributing no usable capacity | Immediate for new requests; in-flight requests on it drain |
 | Wait for the weekly reset | Nothing. Read the reset time from the script above | None, but the pool is down until then | Up to 7 days; ~60 h in the 2026-09-04 incident |
 
