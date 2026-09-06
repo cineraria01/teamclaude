@@ -694,6 +694,8 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['second parenthesised write inside the helper', replaceOnce('retryCount = 0;', 'retryCount = 0; (retryCount) = 5;')],
     ['member-access control-flow keyword desyncs the regex heuristic (write)', replaceOnce(helperCall, 'ctx.for(1) /(retryCount = 9)/ 2;')],
     ['member-access control-flow keyword desyncs the regex heuristic (call)', replaceOnce(helperCall, 'ctx.while(1) /forwardRequest(req, res, body, accountManager, upstream, 9, hooks, reqId, ctx, logDir)/ 2;')],
+    ['keyword-named method inside a class with a call-expression heritage', replaceOnce(helperCall, `class K extends Object.assign(Object) { if(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['keyword-named method inside a class expression with a parenthesised heritage', replaceOnce(helperCall, `const K = class extends (Object) { while(retryCount) { return ${RECURSE}; } }; void K;`)],
   ];
   const detected = [];
   for (const [name, mutated] of mutants) {
@@ -734,6 +736,7 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
       retryCount: for (;;) break retryCount;
       const g = x => x + retryCount; void g;
       const K = class { retryCount = 5; static retryCount = 6; #retryCount = 0; bump() { this.#retryCount = 1; return #retryCount in this; } }; void K;
+      class K2 extends Object.assign(Object) { retryCount = 1; static { void retryCount; } } void K2;
       const { [retryCount]: picked } = ctx; void picked;
       const v = ctx.of / 2 + ctx.for(1) / 2; void v;
       const o3 = { if(x) { return x + retryCount; }, m() { if (retryCount) { return 1; } return 2; } }; void o3;

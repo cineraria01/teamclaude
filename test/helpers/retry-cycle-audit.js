@@ -312,23 +312,37 @@ function innermostOpener(tokens, index) {
   return -1;
 }
 
-function isClassBodyOpener(tokens, k) {
+/**
+ * Does the `{` at `k` open a class body? Walk backward over the heritage
+ * expression (`class K extends mixin(Base, [x]) {`) at depth 0 until the
+ * `class` keyword; any statement boundary or an unmatched opener means no.
+ */
+function isClassBodyOpener(tokens, match, k) {
   if (k < 0 || !isPunct(tokens[k], '{')) return false;
-  const a = tokens[k - 1];
-  const b = tokens[k - 2];
-  return isIdent(a, 'class') || (isIdent(a) && (isIdent(b, 'class') || isIdent(b, 'extends')));
+  for (let j = k - 1; j >= 0; j--) {
+    const token = tokens[j];
+    if (token.type === 'punct') {
+      if (token.value === ')' || token.value === ']' || token.value === '}') { j = match[j]; continue; }
+      if (OPENERS[token.value] || token.value === '${' || token.value === ';' || token.value === '=>' || token.value === ',') return false;
+      continue;
+    }
+    if (isIdent(token, 'class')) return true;
+    if (isIdent(token, 'function') || isIdent(token, 'catch') || CONTROL_FLOW_PAREN.has(token.value)
+        || token.value === 'switch' || token.value === 'else' || token.value === 'try' || token.value === 'finally' || token.value === 'do') return false;
+  }
+  return false;
 }
 
 /** Is the innermost enclosing `{` of `index` a class body? */
 function insideClassBody(tokens, match, index) {
-  return isClassBodyOpener(tokens, innermostOpener(tokens, index));
+  return isClassBodyOpener(tokens, match, innermostOpener(tokens, index));
 }
 
 /** Is token `index` directly inside an object literal or a class body (a member position)? */
-function inMemberPosition(tokens, index) {
+function inMemberPosition(tokens, match, index) {
   const open = innermostOpener(tokens, index);
   if (open < 0 || !isPunct(tokens[open], '{')) return false;
-  return tokens[open].opens === 'object' || isClassBodyOpener(tokens, open);
+  return tokens[open].opens === 'object' || isClassBodyOpener(tokens, match, open);
 }
 
 /** `let a, retryCount;` — a declarator list without an initializer. */
@@ -427,7 +441,7 @@ function classifyEnclosure(tokens, match, index, fn) {
         // `if (…) {` is control flow — unless the keyword is a property access
         // or a member name directly inside an object literal / class body.
         const controlFlowHead = isIdent(beforeOpen) && (CONTROL_FLOW_PAREN.has(beforeOpen.value) || beforeOpen.value === 'switch')
-          && !isPunct(tokens[k - 2], '.') && !isPunct(tokens[k - 2], '?.') && !inMemberPosition(tokens, k - 1);
+          && !isPunct(tokens[k - 2], '.') && !isPunct(tokens[k - 2], '?.') && !inMemberPosition(tokens, match, k - 1);
         const isParamList = isPunct(afterClose, '=>') || isIdent(beforeOpen, 'function') || isIdent(beforeOpen, 'catch')
           || (isIdent(beforeOpen) && isIdent(tokens[k - 2], 'function'))
           || (isPunct(afterClose, '{') && !controlFlowHead); // any method/function head: name, keyword, [computed], 'string', *, function*
