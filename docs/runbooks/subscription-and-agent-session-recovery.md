@@ -123,7 +123,7 @@ LaunchAgent 자체의 필수 설정은 다음과 같다.
 
 ```text
 ProgramArguments:
-  /Users/imac/qjc-agent-server/bin/qjc-worker
+  <worker home>/qjc-agent-server/bin/qjc-worker
   reap-idle
   --apply
 StartInterval: 300
@@ -202,15 +202,15 @@ git branch --show-current
 git status --short
 ```
 
-2026-08-11 `sinsang-ax` 복구 대상은 다음과 같았다.
+실제 사고에서 복구 대상은 아래 세 값으로 특정했다.
 
 ```text
 tmux session:
-  qjc-codex-sinsang-ax-19e584719e4e-0538268a-e602-42d2-8478-8dd7d0290896
+  qjc-codex-<project>-<worktree hash>-<session uuid>
 branch:
-  feature/customer-feedback-loop
+  <작업 브랜치>
 main cmux 당시 위치:
-  workspace:2 / surface:2
+  workspace:N / surface:N
 ```
 
 cmux 번호는 가변이므로 사고 증거로만 사용한다. 이후에는 exact tmux session 이름,
