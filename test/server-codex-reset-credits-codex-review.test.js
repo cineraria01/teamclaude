@@ -617,6 +617,24 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['helper writes a non-zero value', replaceOnce('retryCount = 0;', 'retryCount = retryCount - retryCount;')],
     ['helper loses its write', replaceOnce('retryCount = 0;', 'void 0;')],
     ['second function named forwardRequest', source + '\nfunction forwardRequest(a, b, c, d, e, retryCount) { return retryCount; }\n'],
+    // Codex round on ec8b30f — the lexical audit's own blind spots.
+    ['default-value arrow parameter (was classified as a write)', replaceOnce(helperCall, 'const f = (retryCount = 0) => retryCount; void f;')],
+    ['default-value function parameter', replaceOnce(helperCall, 'function g(a, retryCount = 0) { return retryCount; } void g;')],
+    ['for-of object-pattern target', replaceOnce(helperCall, 'for ({ retryCount } of [{ retryCount: 4 }]) break;')],
+    ['for-of array-pattern target', replaceOnce(helperCall, 'for ([retryCount] of [[4]]) break;')],
+    ['nested pattern inside a for-of target', replaceOnce(helperCall, 'for ({ q: [retryCount] } of [{ q: [0] }]) break;')],
+    ['direct eval', replaceOnce(helperCall, 'eval("retryCount = 7");')],
+    ['object literal followed by division hides a write', replaceOnce(helperCall, 'const n = {} / (retryCount = 4) / 2; void n;')],
+    ['postfix ++ followed by division hides a call', replaceOnce(helperCall, 'let x = 1; x++ / forwardRequest(req, res, body, accountManager, upstream, 9, hooks, reqId, ctx, logDir) / 2;')],
+    ['catch parameter shadowing', replaceOnce(helperCall, 'try { void 0; } catch (retryCount) { void retryCount; }')],
+    ['for-let initializer', replaceOnce(helperCall, 'for (let i = 0, retryCount = 0; i < 1; i++) void retryCount;')],
+    ['assignment hidden inside a parameter default', replaceOnce(helperCall, 'const f = (x = (retryCount = 0)) => x; void f;')],
+    ['key: target destructuring assignment', replaceOnce(helperCall, '({ n: retryCount } = { n: 0 });')],
+    ['key: target declaration shadowing', replaceOnce(helperCall, 'const { n: retryCount } = ctx; void retryCount;')],
+    ['method parameter shadowing', replaceOnce(helperCall, 'const o = { m(retryCount) { return retryCount; } }; void o;')],
+    ['async arrow parameter shadowing', replaceOnce(helperCall, 'const f = async (a, retryCount) => retryCount; void f;')],
+    ['forwardRequest.call', replaceOnce(helperCall, 'return forwardRequest.call(null, req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
+    ['optional call', replaceOnce(helperCall, 'return forwardRequest?.(req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
   ];
   for (const [name, mutated] of mutants) {
     const { violations } = auditRetryCycle(mutated);
@@ -634,9 +652,16 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     const restartRetryCycle = () => { retryCount = 0; };
     async function forwardRequest(req, res, body, am, up, retryCount, hooks, id, ctx, dir) {
       if (retryCount === 0) ctx.flag = false;
-      const o = { retryCount, retryCount: retryCount + 1, n: ctx.retryCount };
+      const o = { retryCount, retryCount: retryCount + 1, n: ctx.retryCount, [retryCount]: 1 };
       console.log(o.retryCount, retryCount >= 3 ? 'x' : 'y', \`\${retryCount}\`);
       log(retryCount);
+      const rate = {} / 2; let a = 1; a++ / 2; void rate;
+      if (a) {}
+      /retryCount = 1/.test('x');
+      const h = (x = retryCount) => x; void h;
+      const { z = retryCount } = ctx; void z;
+      const [w = retryCount + 1] = [0]; void w;
+      try { void 0; } catch (err) { void err; }
       if (retryCount < 3) return forwardRequest(req, res, body, am, up, retryCount + 1, hooks, id, ctx, dir);
       restartRetryCycle();
       return forwardRequest(req, res, body, am, up, 0, hooks, id, ctx, dir);
@@ -646,5 +671,5 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
   assert.deepEqual(clean.violations, []);
   assert.equal(clean.calls.length, 2);
   assert.equal(clean.writes.length, 1);
-  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 1);
+  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 2);
 });

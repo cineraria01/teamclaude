@@ -44,16 +44,35 @@ function isIdentPart(ch) { return /[\w$]/.test(ch); }
 export function tokenizeJs(source) {
   const tokens = [];
   const templateStack = []; // brace depth at which each open `${` resumes its template
+  const braceKinds = []; // 'object' | 'block' | 'template' for every open `{` / `${`
   let braceDepth = 0;
   let i = 0;
   let line = 1;
   const push = (type, value, start) => tokens.push({ type, value, start, end: i, line });
-  const regexAllowed = () => {
-    const prev = tokens[tokens.length - 1];
-    if (!prev) return true;
-    if (prev.type === 'num' || prev.type === 'str' || prev.type === 'tpl' || prev.type === 'regex') return false;
-    if (prev.type === 'ident') return REGEX_AFTER_KEYWORD.has(prev.value);
-    return !(prev.value === ')' || prev.value === ']');
+  // Does the previous token end an expression? Then a following `/` is a
+  // division (and a following `++`/`--` is postfix), otherwise a regex.
+  const endsExpression = prev => {
+    if (!prev) return false;
+    if (prev.type === 'num' || prev.type === 'str' || prev.type === 'tpl' || prev.type === 'regex') return true;
+    if (prev.type === 'ident') return !REGEX_AFTER_KEYWORD.has(prev.value);
+    if (prev.value === ')' || prev.value === ']') return true;
+    if (prev.value === '}') return prev.closes === 'object';
+    if (prev.value === '++' || prev.value === '--') return prev.postfix === true;
+    return false;
+  };
+  const regexAllowed = () => !endsExpression(tokens[tokens.length - 1]);
+  const braceKind = prev => {
+    // `{` opens an object literal when it sits where an expression must
+    // start; everywhere else (statement start, after `)`/`=>`/`;`/`}`/`{`,
+    // after `else`/`do`/`try`/`finally`, class bodies) it opens a block.
+    if (!prev) return 'block';
+    if (prev.type === 'punct') {
+      if (prev.value === '${') return 'object';
+      return (prev.value === ')' || prev.value === ']' || prev.value === ';' || prev.value === '}'
+        || prev.value === '{' || prev.value === '=>') ? 'block' : 'object';
+    }
+    if (prev.type === 'ident') return REGEX_AFTER_KEYWORD.has(prev.value) ? 'object' : 'block';
+    return 'block';
   };
   const scanTemplate = () => {
     // called with i just past a "`" or a template-resuming "}"
@@ -67,6 +86,7 @@ export function tokenizeJs(source) {
         i += 2;
         push('tpl', source.slice(start, i), start);
         templateStack.push(braceDepth);
+        braceKinds.push('template');
         braceDepth++;
         push('punct', '${', i - 2);
         return;
@@ -137,15 +157,24 @@ export function tokenizeJs(source) {
     if (!punct) throw new Error(`unexpected character ${JSON.stringify(ch)} at line ${line}`);
     const start = i;
     i += punct.length;
-    if (punct === '{') braceDepth++;
+    if (punct === '{') { braceKinds.push(braceKind(tokens[tokens.length - 1])); braceDepth++; }
     if (punct === '}') {
       braceDepth--;
+      const closes = braceKinds.pop();
       if (templateStack.length && templateStack[templateStack.length - 1] === braceDepth) {
         templateStack.pop();
         push('punct', '}', start);
         scanTemplate();
         continue;
       }
+      push('punct', punct, start);
+      tokens[tokens.length - 1].closes = closes;
+      continue;
+    }
+    if (punct === '++' || punct === '--') {
+      push('punct', punct, start);
+      tokens[tokens.length - 1].postfix = endsExpression(tokens[tokens.length - 2]);
+      continue;
     }
     push('punct', punct, start);
   }
@@ -207,13 +236,47 @@ function classifyParamToken(tokens, match, index, fn) {
   const next = tokens[index + 1];
   if (isPunct(prev, '.') || isPunct(prev, '?.')) return 'key';
   if (isPunct(next, ':') && (isPunct(prev, '{') || isPunct(prev, ','))) return 'key';
-  if (next && next.type === 'punct' && ASSIGNMENT_OPS.has(next.value)) return 'write';
   if (isPunct(next, '++') || isPunct(next, '--') || isPunct(prev, '++') || isPunct(prev, '--')) return 'write';
   if (isIdent(prev, 'let') || isIdent(prev, 'const') || isIdent(prev, 'var')) return 'binding';
   if (isIdent(next, 'of') || isIdent(next, 'in')) return 'write';
-  // Walk the enclosing brackets outward: destructuring targets, declarations,
-  // and parameter lists bind or write the identifier; a call or grouping
-  // makes it a plain read.
+  // The enclosing brackets decide BEFORE a trailing `=` is read as a write:
+  // `(retryCount = 0) => …` is a parameter binding with a default, not a
+  // write (Codex round on ec8b30f).
+  const enclosure = classifyEnclosure(tokens, match, index, fn);
+  if (enclosure === 'binding' || enclosure === 'param' || enclosure === 'write') return enclosure;
+  if (next && next.type === 'punct' && ASSIGNMENT_OPS.has(next.value)) return 'write';
+  return 'read';
+}
+
+/**
+ * Walk the enclosing brackets outward from `index`: destructuring targets,
+ * declarations, and parameter lists bind or write the identifier; a call or
+ * grouping makes it a plain read.
+ */
+/**
+ * Inside the bracket pair opened at `open`, is token `index` in the binding
+ * part of its comma-separated element (`target`, `target = default`,
+ * `key: target = default`, `...rest`) or inside a default-value expression?
+ */
+function elementRole(tokens, match, open, index) {
+  let start = open + 1;
+  for (let k = open + 1; k < index; k++) {
+    const token = tokens[k];
+    if (token.type === 'punct' && (OPENERS[token.value] || token.value === '${')) { k = match[k]; continue; }
+    if (isPunct(token, ',')) start = k + 1;
+  }
+  let sawColon = false;
+  for (let k = start; k < index; k++) {
+    const token = tokens[k];
+    if (token.type === 'punct' && (OPENERS[token.value] || token.value === '${')) { k = match[k]; continue; }
+    if (isPunct(token, ':') && tokens[open].value === '{') { sawColon = true; continue; }
+    if (isPunct(token, '=')) return 'default';
+  }
+  void sawColon; // `key: target` — the target after the colon is still a binding
+  return 'binding';
+}
+
+function classifyEnclosure(tokens, match, index, fn) {
   let k = index - 1;
   let depth = 0;
   while (k >= 0) {
@@ -227,20 +290,26 @@ function classifyParamToken(tokens, match, index, fn) {
         const beforeOpen = tokens[k - 1];
         if (token.value === '${') return 'read';
         if (token.value === '{' || token.value === '[') {
-          if (isPunct(afterClose, '=')) return 'write';
-          if (isIdent(beforeOpen, 'let') || isIdent(beforeOpen, 'const') || isIdent(beforeOpen, 'var')) return 'binding';
+          const isPattern = isPunct(afterClose, '=') || isIdent(afterClose, 'of') || isIdent(afterClose, 'in')
+            || isIdent(beforeOpen, 'let') || isIdent(beforeOpen, 'const') || isIdent(beforeOpen, 'var');
+          if (isPattern) {
+            if (elementRole(tokens, match, k, index) === 'default') return 'read'; // `{ a = retryCount } = s`
+            if (isIdent(beforeOpen, 'let') || isIdent(beforeOpen, 'const') || isIdent(beforeOpen, 'var')) return 'binding';
+            return 'write'; // destructuring assignment or for ({…} of xs) target
+          }
           k--; // nested pattern or object literal — keep walking outward
           continue;
         }
         // '('
-        if (isPunct(afterClose, '=>')) return 'binding';
-        if (isIdent(beforeOpen, 'function')) return 'binding';
-        if (isIdent(beforeOpen) && !isKeyword(beforeOpen)) {
-          if (isIdent(tokens[k - 2], 'function')) return beforeOpen.value === fn ? 'param' : 'binding';
-          if (isPunct(afterClose, '{')) return 'binding'; // method shorthand
-          return 'read'; // call argument
+        const isParamList = isPunct(afterClose, '=>') || isIdent(beforeOpen, 'function') || isIdent(beforeOpen, 'catch')
+          || (isIdent(beforeOpen) && !isKeyword(beforeOpen)
+            && (isIdent(tokens[k - 2], 'function') || isPunct(afterClose, '{')));
+        if (isParamList) {
+          if (elementRole(tokens, match, k, index) === 'default') return 'read'; // `(x = retryCount) => x`
+          if (isIdent(tokens[k - 2], 'function') && isIdent(beforeOpen, fn)) return 'param';
+          return 'binding';
         }
-        return 'read'; // grouping / control-flow parenthesis
+        return 'read'; // call argument, grouping, or control-flow parenthesis
       }
     }
     k--;
@@ -266,6 +335,15 @@ export function auditRetryCycle(source, {
   const calls = [];
   const writes = [];
   const allowed = new Set(allowedRetryArgs.map(a => a.replace(/\s+/g, ' ')));
+
+  // Dynamic code can write the parameter from a string the tokenizer keeps
+  // opaque (`eval('retryCount = 7')` — a direct eval sees the enclosing
+  // scope even in strict mode). Fail closed on any direct eval reference.
+  tokens.forEach((token, index) => {
+    if (isIdent(token, 'eval') && !isPunct(tokens[index - 1], '.') && !isPunct(tokens[index - 1], '?.')) {
+      violations.push(`line ${token.line}: direct eval is not allowed in the audited source`);
+    }
+  });
 
   // The single definition and the position of the retry parameter.
   const defs = tokens
