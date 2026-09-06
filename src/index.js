@@ -2222,7 +2222,7 @@ async function reauthenticateCommand() {
     ? uuidEqualsArg.slice('--account-uuid='.length) || null
     : argValue('--account-uuid');
   if (!name || name.startsWith('--')) {
-    console.error('Usage: teamcodex reauth <account-name> [--account-uuid UUID]');
+    console.error('Usage: teamclaude reauth <account-name> [--account-uuid UUID]');
     process.exit(1);
   }
   if ((uuidFlagIndex >= 0

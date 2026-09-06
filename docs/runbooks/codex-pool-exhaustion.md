@@ -243,7 +243,7 @@ The pool cannot manufacture quota. There are three real moves.
 
 Notes:
 
-- The same binary is `teamcodex codex <cmd>` when installed under that name.
+- The same binary is `teamclaude codex <cmd>` when installed under that name.
   Config `provider: "codex"` or `TEAMCLAUDE_PROVIDER=codex` selects the pool
   (`~/.config/teamcodex.json`, port 3457).
 - **Make sure the running server picked the account up.** The CLI asks the live

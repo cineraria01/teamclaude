@@ -96,7 +96,7 @@ Request-scoped cascade detection with retroactive un-parking.
    already explained without blaming the request, so counting it would inflate
    the tally: in a fleet that merely contains one degraded account, the NEXT
    account — whose 401 is genuinely unexplained — would trip the guard and
-   escape parking, staying in rotation and invisible in `teamcodex status`.
+   escape parking, staying in rotation and invisible in `teamclaude status`.
    Reproduced before the fix; covered by a test with that visit order.
 
 ### Why threshold 2

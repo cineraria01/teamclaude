@@ -2,7 +2,7 @@
 
 ## 증상
 
-`teamcodex run`으로 시작한 Claude Code에 다음 오류가 표시됩니다.
+`teamclaude run`으로 시작한 Claude Code에 다음 오류가 표시됩니다.
 
 ```text
 API Error: 502 Upstream connection failed after dispatch. Request was not replayed.
@@ -29,7 +29,7 @@ POST를 proxy 내부에서 다른 account로 재전송하면 중복 inference·�
 1. Proxy는 원본 POST를 정확히 한 번만 dispatch하고 완결된 502를 반환합니다.
 2. Account를 error로 오염시키거나 자동 회전하지 않습니다.
 3. Codex handoff로 바꾸지 않습니다.
-4. `teamcodex run` launcher는 동일 session ID를 UI-only로 다시 열며 `continue`를 보내지 않습니다.
+4. `teamclaude run` launcher는 동일 session ID를 UI-only로 다시 열며 `continue`를 보내지 않습니다.
 5. 같은 502가 반복되면 전용 budget을 소진하고 추가 자동 reopen도 하지 않습니다.
 
 ## 자동 처리 조건
@@ -72,15 +72,15 @@ message = API Error: 502 Upstream connection failed after dispatch. Request was 
 
 ## 확인 및 복구 절차
 
-1. 세션이 일반 `claude`가 아니라 `teamcodex run`으로 시작됐는지 확인합니다.
-2. 별도 터미널에서 `teamcodex status`와 listener를 확인합니다.
+1. 세션이 일반 `claude`가 아니라 `teamclaude run`으로 시작됐는지 확인합니다.
+2. 별도 터미널에서 `teamclaude status`와 listener를 확인합니다.
 3. 화면의 Request ID를 보존하고 같은 시각의 proxy/upstream 로그와 대조합니다.
 4. 첫 자동 safe-reopen에서도 같은 502가 반복되면 upstream/tunnel 상태를 먼저
    복구합니다. budget을 즉시 늘리지 않습니다.
-5. 이미 직접 실행한 legacy 세션은 `teamcodex run -- --resume <session-id>`로
+5. 이미 직접 실행한 legacy 세션은 `teamclaude run -- --resume <session-id>`로
    전환합니다. cmux 자동 adoption은 `cmuxSessionRescue: true`일 때만 동작합니다.
 
-실행 중인 supervised Claude 세션 안에서 `teamcodex stop` 또는 `restart`를 실행하지
+실행 중인 supervised Claude 세션 안에서 `teamclaude stop` 또는 `restart`를 실행하지
 마세요. 해당 명령은 거부되며, 의도적인 재시작은 별도 터미널에서 수행합니다.
 
 ## 재발 검증

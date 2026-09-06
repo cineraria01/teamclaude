@@ -19,7 +19,7 @@
 - Modify `test/claude-recovery.test.js`: exact usage/timeout classification, UUID-confirmed rotation, bounded auto-mode denial recovery, and non-bypassing safeguard-refusal continuity.
 - Modify `test/run-recovery.test.js`: exercise real launcher UUID rotation and safe continuation argv.
 - Modify `src/config.js` and `config.example.json`: expose a separate bounded safety-denial recovery budget.
-- Modify `README.md`, `README.ko.md`, and `docs/runbooks/ambiguous-dispatch-502.md`: plain `claude` is normal entry; direct `teamcodex run` is diagnostic only.
+- Modify `README.md`, `README.ko.md`, and `docs/runbooks/ambiguous-dispatch-502.md`: plain `claude` is normal entry; direct `teamclaude run` is diagnostic only.
 - Create `docs/runbooks/transparent-claude-recovery.md`: worker/main installation, legacy-session adoption, verification, and rollback.
 
 ### Task 1: Prevent recursive supervised launch
@@ -295,11 +295,11 @@ git commit -m "test: pin auto-mode denial recovery boundary"
 
 - [ ] **Step 1: Update user-facing entrypoint language**
 
-Replace normal-operation instructions that require `teamcodex run` with:
+Replace normal-operation instructions that require `teamclaude run` with:
 
 ```text
 Run `teamcodex install-claude-wrapper` once. Thereafter use `claude` normally.
-`teamcodex run` is a diagnostic bypass for inspecting the launcher itself;
+`teamclaude run` is a diagnostic bypass for inspecting the launcher itself;
 `claude-vendor` is an emergency direct-vendor bypass with no recovery.
 ```
 
@@ -363,7 +363,7 @@ Use the authenticated remote channel when available:
 
 ```bash
 teamcodex install-claude-wrapper
-teamcodex restart
+teamclaude restart
 claude --version
 ```
 

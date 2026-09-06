@@ -350,7 +350,7 @@ npx eslint src/ test/codex-reset-credits*.test.js test/server-codex-reset-credit
 
 Round 2 evidence (2026-09-05): the 16-file set above = 331 pass / 0 fail;
 supervisor fence 1/1; eslint clean. Three pre-existing supervisor tests
-(`teamcodex run starts a missing proxy`, `CLI remove reloads…`, `live
+(`teamclaude run starts a missing proxy`, `CLI remove reloads…`, `live
 account removal lowers…`) fail identically on the untouched production
 lineage in this environment and are unrelated.
 
