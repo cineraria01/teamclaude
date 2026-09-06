@@ -266,6 +266,9 @@ function classifyParamToken(tokens, match, index, fn) {
   if (isPunct(next, ':') && (isPunct(prev, '{') || isPunct(prev, ','))) return 'key';
   if (isPunct(next, '++') || isPunct(next, '--') || isPunct(prev, '++') || isPunct(prev, '--')) return 'write';
   if (isIdent(prev, 'let') || isIdent(prev, 'const') || isIdent(prev, 'var')) return 'binding';
+  if (isIdent(prev, 'function') || isIdent(prev, 'class')
+      || (isPunct(prev, '*') && isIdent(tokens[index - 2], 'function'))) return 'binding'; // declaration names
+  if (isPunct(next, '=>')) return 'binding'; // `retryCount => …` (no parenthesis to walk)
   if (isIdent(next, 'of') || isIdent(next, 'in')) return 'write';
   // The enclosing brackets decide BEFORE a trailing `=` is read as a write:
   // `(retryCount = 0) => …` is a parameter binding with a default, not a

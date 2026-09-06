@@ -649,6 +649,22 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['control-flow parenthesis followed by a template-opening regex swallows a write', replaceOnce(helperCall, 'if (ctx) /`/.test(reqId); retryCount = 9; void `x`;')],
     ['spread argument shifts the retry position', replaceOnce(helperCall, 'const pair = [upstream, 7]; return forwardRequest(req, res, body, accountManager, ...pair, retryCount, hooks, reqId, ctx, logDir);')],
     ['spread argument at the tail', replaceOnce(helperCall, 'const tail = [hooks, reqId, ctx, logDir]; return forwardRequest(req, res, body, accountManager, upstream, 0, ...tail);')],
+    // Bindings without a bracket to walk.
+    ['arrow parameter without parentheses', replaceOnce(helperCall, 'const f = retryCount => retryCount; void f;')],
+    ['async arrow parameter without parentheses', replaceOnce(helperCall, 'const f = async retryCount => retryCount; void f;')],
+    ['function declaration named retryCount', replaceOnce(helperCall, 'function retryCount() {} void retryCount;')],
+    ['generator declaration named retryCount', replaceOnce(helperCall, 'function* retryCount() {} void retryCount;')],
+    ['class declaration named retryCount', replaceOnce(helperCall, 'class retryCount {} void retryCount;')],
+    ['var redeclaration of the parameter', replaceOnce(helperCall, 'var retryCount; void retryCount;')],
+    ['object-literal property value assignment', replaceOnce(helperCall, 'const o = { k: retryCount = 1 }; void o;')],
+    ['comma-expression write', replaceOnce(helperCall, 'void (reqId, retryCount = 1);')],
+    ['template-expression write', replaceOnce(helperCall, 'void `${retryCount = 1}`;')],
+    ['catch pattern parameter', replaceOnce(helperCall, 'try { void 0; } catch ({ retryCount }) { void retryCount; }')],
+    ['rest parameter', replaceOnce(helperCall, 'const f = (...retryCount) => retryCount; void f;')],
+    ['pattern rest write', replaceOnce(helperCall, '[...retryCount] = [1];')],
+    ['computed-key pattern target', replaceOnce(helperCall, '({ [reqId]: retryCount } = { [reqId]: 1 });')],
+    ['inner arrow parameter passes the bare allowlisted name', replaceOnce(helperCall, 'const inner = (retryCount) => forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir); void inner;')],
+    ['IIFE write', replaceOnce(helperCall, '(() => { retryCount = 1; })();')],
   ];
   const detected = [];
   for (const [name, mutated] of mutants) {
@@ -686,6 +702,8 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
       const { z = retryCount } = ctx; void z;
       const [w = retryCount + 1] = [0]; void w;
       try { void 0; } catch (err) { void err; }
+      retryCount: for (;;) break retryCount;
+      const g = x => x + retryCount; void g;
       if (retryCount < 3) return forwardRequest(req, res, body, am, up, retryCount + 1, hooks, id, ctx, dir);
       restartRetryCycle();
       return forwardRequest(req, res, body, am, up, 0, hooks, id, ctx, dir);
