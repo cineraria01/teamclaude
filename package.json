@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "bin": {
+    "teamclaude": "src/teamclaude.js",
     "teamcodex": "src/index.js"
   },
   "files": [
