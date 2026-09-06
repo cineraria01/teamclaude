@@ -27,7 +27,7 @@ Anthropic OAuth account의 조직이 Claude Code subscription access를 비활�
 
 ## Acceptance criteria
 
-- 실제 `teamclaude run -- -p ...`로 기존 오류가 재현되고 usage가 0인 403임을 기록합니다.
+- 실제 `teamcodex run -- -p ...`로 기존 오류가 재현되고 usage가 0인 403임을 기록합니다.
 - synthetic upstream에서 account A가 정확한 subscription-disabled 403, B가 200이면 A는 한 번만 호출되고 `error`로 격리되며 client는 B의 200을 받습니다.
 - 두 account 모두 정확한 403이면 둘 다 한 번씩 격리되고 마지막 원본 403 body/header가 client에 반환됩니다.
 - 일반 `permission_error` 403이면 failover하지 않고 원본 403을 반환하며 account는 active 상태를 유지합니다.
@@ -66,12 +66,12 @@ Config/schema/data migration은 없습니다. 기존 account 상태 파일 형�
 
 1. synthetic red/green과 전체 regression을 통과시킵니다.
 2. 임시 local server/Claude config로 실제 CLI failover를 확인합니다.
-3. 운영 server는 검증 완료 뒤 `teamclaude restart`로 새 worker를 로드합니다.
+3. 운영 server는 검증 완료 뒤 `teamcodex restart`로 새 worker를 로드합니다.
 4. status에서 거부 account가 `error`로 격리되고 건강한 active account가 선택되는지 확인합니다.
 
 ## Rollback
 
-- 운영 우회: 문제 account를 `teamclaude disable <name>`로 제외합니다.
+- 운영 우회: 문제 account를 `teamcodex disable <name>`로 제외합니다.
 - 코드 rollback: 이 변경의 classifier/403 branch/test/docs를 reverse-revert합니다.
 - Config/data migration이 없으므로 별도 rollback 작업은 없습니다. 격리된 account는 re-import/login 또는 server restart 후 검증된 credential로 복구합니다.
 
@@ -79,11 +79,11 @@ Config/schema/data migration은 없습니다. 기존 account 상태 파일 형�
 
 - 분류 시 `[TeamClaude] 403 subscription access disabled on "<account>" — marking account error and switching`을 남깁니다.
 - body/token은 log하지 않습니다.
-- `teamclaude status`의 account `error`와 active account 변경이 운영 확인 표면입니다.
+- `teamcodex status`의 account `error`와 active account 변경이 운영 확인 표면입니다.
 
 ## Runbook
 
-1. CLI에 해당 문구가 나타나면 `teamclaude status`에서 active/error account를 확인합니다.
-2. 건강한 account가 남았는데도 client가 403을 받으면 server가 수정 버전을 로드했는지 확인하고 `teamclaude restart`합니다.
+1. CLI에 해당 문구가 나타나면 `teamcodex status`에서 active/error account를 확인합니다.
+2. 건강한 account가 남았는데도 client가 403을 받으면 server가 수정 버전을 로드했는지 확인하고 `teamcodex restart`합니다.
 3. 모든 account가 error면 각 조직의 Claude Code subscription access를 관리자에게 확인한 뒤 account를 re-import/login합니다.
 4. 긴급 우회는 문제 account disable이며, API key 자동 전환이나 source Claude config 수정은 하지 않습니다.

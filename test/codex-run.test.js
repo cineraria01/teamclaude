@@ -31,7 +31,7 @@ function assertSingleInvocationWithoutResume(invocations, expectedTail) {
   );
 }
 
-test('teamclaude codex run launches Codex through the login-free HTTP-only provider', async () => {
+test('teamcodex codex run launches Codex through the login-free HTTP-only provider', async () => {
   // Given
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-run-'));
   const fakeCodex = join(dir, 'codex');
@@ -87,7 +87,7 @@ console.log(JSON.stringify({
   }
 });
 
-test('teamclaude codex run uses a single spawn for success, non-429, and 429-style exits without implicit resume', async () => {
+test('teamcodex codex run uses a single spawn for success, non-429, and 429-style exits without implicit resume', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-run-exit-'));
   const fakeCodex = join(dir, 'codex');
   const configPath = join(dir, 'teamcodex.json');
@@ -140,7 +140,7 @@ process.exit(Number(process.env.FAKE_EXIT));
   }
 });
 
-test('teamclaude codex run propagates SIGINT with a single spawn and no resume flags', async () => {
+test('teamcodex codex run propagates SIGINT with a single spawn and no resume flags', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-run-signal-'));
   const fakeCodex = join(dir, 'codex');
   const configPath = join(dir, 'teamcodex.json');
@@ -180,7 +180,7 @@ process.kill(process.pid, 'SIGINT');
   }
 });
 
-test('teamclaude codex import creates a separate Codex account pool', async () => {
+test('teamcodex codex import creates a separate Codex account pool', async () => {
   // Given
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-import-'));
   const authPath = join(dir, 'auth.json');
@@ -239,7 +239,7 @@ test('teamclaude codex import creates a separate Codex account pool', async () =
   }
 });
 
-test('teamclaude codex login keeps the official login in an isolated CODEX_HOME', async () => {
+test('teamcodex codex login keeps the official login in an isolated CODEX_HOME', async () => {
   // Given
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-login-'));
   const fakeCodex = join(dir, 'codex');

@@ -9,7 +9,7 @@ Spec: `docs/specs/2026-08-02-claude-subscription-disabled-failover.md`
 
 ## Tasks
 
-1. [x] 실제 `teamclaude run`에서 placeholder client OAuth로 조직 subscription-disabled 403과 usage 0을 재현하고 active account 불변을 확인합니다.
+1. [x] 실제 `teamcodex run`에서 placeholder client OAuth로 조직 subscription-disabled 403과 usage 0을 재현하고 active account 불변을 확인합니다.
 2. [x] `test/server-403.test.js`에 exact 403 failover, all-disabled original response, unrelated 403 pass-through를 추가하고 red를 기록합니다.
 3. [x] `src/server.js`에 bounded JSON classifier와 account 격리/failover를 최소 변경으로 구현합니다.
 4. [x] 403 targeted test, 인접 401/429/network/stream regression, ESLint, 전체 suite를 실행합니다.

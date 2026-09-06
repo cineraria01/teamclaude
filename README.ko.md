@@ -39,27 +39,39 @@
 ## 설치
 
 ```bash
-npm i -g teamcodex
+npm i -g github:sangrokjung/teamclaude
 
 teamcodex import          # 기존 클로드 코드 로그인 가져오기
 teamcodex codex import    # 기존 ~/.codex/auth.json 가져오기
 teamcodex server          # 프록시 시작 후 `teamcodex run`
 ```
 
-명령은 `teamcodex` 하나입니다. `teamclaude` 바이너리는 일부러 설치하지 않습니다. 같은
-이름을 쓰는 원본 패키지와 충돌하지 않기 위해서입니다.
+이렇게 하면 기본 브랜치가 설치됩니다. `npm i -g teamcodex`도 동작하지만 레지스트리에
+올라간 판은 **1.1.0(2026-07-29)**이고 이 브랜치는 그보다 한참 앞서 있습니다. 그 판에는
+BYOK 표면도, Codex 리셋 크레딧도, 계정 재인증도, 401 캐스케이드 가드도 들어 있지
+않습니다. 옛 릴리스가 꼭 필요한 게 아니라면 저장소에서 받으세요.
 
-저장소에서 바로 받고 싶다면 `npm i -g github:sangrokjung/teamclaude`도 동작합니다.
-이쪽은 항상 기본 브랜치를 따라갑니다.
+어느 쪽으로 받든 명령은 `teamcodex` 하나입니다. `teamclaude` 바이너리는 일부러 설치하지
+않습니다. 같은 이름을 쓰는 원본 패키지와 충돌하지 않기 위해서입니다. 어떤 문서에서든
+`teamclaude`로 시작하는 명령을 봤다면 오타이고, 여러분에게 있는 바이너리는 `teamcodex`입니다.
+
+계정은 **본인 것**을 쓰세요. 본인이 결제한 클로드·ChatGPT 구독으로 로그인하면 됩니다.
+이 도구는 본인 머신에서 본인 로그인 사이를 오갈 뿐이고, 한 자리를 여럿이 나눠 쓰라고
+만든 물건이 아닙니다.
 
 ## 이용약관에 문제가 없나요?
 
 없습니다. 이 도구는 계정을 여러 사람이 나눠 쓰거나, 재판매하거나, 남에게 중계하지 않습니다.
 
-**본인이 가진 계정**을 **본인 머신에서** 순환시킬 뿐입니다. 손으로 로그인을 갈아끼우는
+**본인이 가진 계정**을 순환시킬 뿐입니다. 손으로 로그인을 갈아끼우는
 동작에서 수동 재로그인만 없앤 것이고, 요청마다 그 계정의 OAuth 토큰이 그대로 실립니다.
 크리덴셜은 로컬에 보관되고, CLI가 원래 보내던 곳인 벤더 API로만 전송됩니다. 제3자는
 크리덴셜을 보지 못합니다.
+
+풀은 머신 한 대에서 돕니다. 본인이 쓰는 다른 기기에서 사설 터널 같은 경로로 그 풀에
+붙는 것도 결국 본인 계정으로 본인 세션을 쓰는 것이고, 런북도 그런 구성을 전제합니다.
+지원하지 않는 쪽은 두 번째 **사람**입니다. 기준은 머신이 몇 대냐가 아니라 누구의 구독이
+요청에 서명하느냐입니다.
 
 쿼터를 늘려주지도, 한도를 우회하지도 않습니다. 이미 결제한 쿼터가 그냥 소멸하는 것을
 막아줄 뿐입니다.
@@ -136,6 +148,7 @@ TeamClaude와 TeamCodex는 클라이언트가 항상 동일한 로컬 주소를 
 - **동시 요청 분산** — 계정별 동시 요청 한도를 넘는 트래픽은 다른 계정으로 자동 분산합니다.
 - **Fable/Mythos 계정 우선** — 모델별 window가 유효 기간 내이고, 유한한 값으로 측정됐으며, 한도에 도달한(fresh·finite·full) 계정만 그 요청에서 제외합니다. 미측정·만료·사용 가능 계정은 원래 모델로 먼저 시도하고, Opus/Sonnet/Haiku 자격은 유지합니다.
 - **모델 fallback** — 캐시에 기록된 general-available 계정이 모두 해당 모델에서 fresh-full이거나, labeled model-tier 429가 실시간으로 eligible 계정 전체에서 확인되면 대체 모델로 전환합니다. Claude Code advisor 요청은 root `tools[]`의 `advisor_*` 항목에 있는 중첩 모델을 기준으로 라우팅하며, fallback도 top-level executor가 아닌 해당 중첩 `model`만 바꿉니다. label 없는 global 429와 단순 local cap·동시성 queue는 모델을 바꾸지 않습니다.
+- **BYOK 표면 (fork 전용)** — `/byok` 경로 prefix를 켜면 "자기 키를 넣어 쓰는" 서드파티 클라이언트(에디터 플러그인, AI 브라우저, 자체 스크립트)도 이 풀을 쓸 수 있습니다. 프록시가 업스트림이 1차 클라이언트에게 요구하는 형태로 요청을 맞춰 주고 거부 대상 브라우저 헤더를 떼는 동안, `/v1/*`로 오는 Claude Code 트래픽은 바이트 단위로 그대로입니다. 설정하지 않으면 꺼진 상태이고, 켜기 전에 이용약관 절을 읽으십시오.
 - **실시간 TUI** — 계정 상태, 세션·주간 사용량, 초기화 시간, CPU·RAM을 표시합니다.
 - **계정 수동 제어** — enable, disable, switch, priority 순서를 CLI와 TUI에서 변경할 수 있습니다.
 - **재시작 후 상태 복원** — 사용량과 throttle 상태를 별도 quota 파일에 저장합니다.
@@ -154,22 +167,22 @@ Node.js 18 이상이 필요합니다.
 npm install -g teamcodex
 
 # Claude 계정 추가 — 브라우저 OAuth가 열립니다
-teamclaude login
-teamclaude login
+teamcodex login
+teamcodex login
 
 # Claude 프록시 시작
-teamclaude server
+teamcodex server
 
 # 다른 터미널에서 Claude Code 실행
-teamclaude run
+teamcodex run
 ```
 
 > [!IMPORTANT]
-> 프록시가 실행 중이어도 일반 `claude` 명령은 자동으로 프록시를 사용하지 않습니다. 계정 자동 전환을 사용하려면 반드시 `teamclaude run`으로 시작하세요.
-> `teamclaude run`은 로컬 계정이 있고 프록시가 없으면 background supervisor를 자동 기동합니다. 로컬 계정이 없는 터널 전용 머신은 외부 listener를 기다립니다. proxy worker가 비정상 종료되어도 public listener는 유지되고 worker가 자동 재기동됩니다.
+> 프록시가 실행 중이어도 일반 `claude` 명령은 자동으로 프록시를 사용하지 않습니다. 계정 자동 전환을 사용하려면 반드시 `teamcodex run`으로 시작하세요.
+> `teamcodex run`은 로컬 계정이 있고 프록시가 없으면 background supervisor를 자동 기동합니다. 로컬 계정이 없는 터널 전용 머신은 외부 listener를 기다립니다. proxy worker가 비정상 종료되어도 public listener는 유지되고 worker가 자동 재기동됩니다.
 > `launchModel` fallback은 일반 한도 기준으로 사용 가능한 계정 전부의 모델별 window가 유효하게 측정된 한도 도달 상태일 때만 적용됩니다. 미측정 또는 만료 window가 하나라도 있으면 조기 downgrade하지 않습니다.
 
-`autoResumeClaude: true`인 `teamclaude run` 세션에서 정확한
+`autoResumeClaude: true`인 `teamcodex run` 세션에서 정확한
 `ConnectionRefused` / `ECONNREFUSED` API 오류가 발생하면 launcher는 종료하지 않고
 프록시 또는 SSH 터널이 돌아올 때까지 대기한 뒤, 미전송이 확실한 요청만 동일한
 session ID에서 `continue`합니다. `ConnectionReset` / `ECONNRESET`과 `Request timed
@@ -188,7 +201,7 @@ continuation prompt를 보내지 않습니다. 따라서 launcher도 두 번째 
 일반 prompt의 유사 문장은 오류로 오탐하지 않습니다. 운영 절차는
 [ambiguous-dispatch 502 runbook](docs/runbooks/ambiguous-dispatch-502.md)을 참고하세요.
 
-`teamclaude run`으로 감독되는 세션에서 Claude Code가 정확한 `out of usage
+`teamcodex run`으로 감독되는 세션에서 Claude Code가 정확한 `out of usage
 credits` 또는 `usage limit` API 오류를 기록하면 transient overload와 분리해
 처리합니다. launcher는 막힌 child를 먼저 종료하고 로컬 proxy 복구를 기다린 뒤,
 인증된 `/teamclaude/rotate`가 **다른 account UUID**를 반환한 경우에만 같은 session을
@@ -197,9 +210,9 @@ credits` 또는 `usage limit` API 오류를 기록하면 transient overload와 �
 rate-limit은 이 강제 계정 회전을 호출하지 않습니다.
 
 프록시를 의도적으로 중지하거나 재시작할 때는 별도 터미널을 사용하세요.
-supervised Claude 세션 안에서 실행한 `teamclaude stop` / `restart`는 자기 연결을
+supervised Claude 세션 안에서 실행한 `teamcodex stop` / `restart`는 자기 연결을
 끊지 않도록 거부됩니다. 이미 직접 `claude`로 시작한 기존 프로세스에는 recovery
-launcher를 소급 적용할 수 없으므로 다음 세션부터 `teamclaude run`을 사용하세요.
+launcher를 소급 적용할 수 없으므로 다음 세션부터 `teamcodex run`을 사용하세요.
 
 Anthropic이 한 OAuth 계정에 구조화된 `oauth_not_allowed_for_organization`
 403을 반환하면 TeamClaude는 해당 계정만 인증 오류로 격리하고, 완결된 거부
@@ -213,7 +226,7 @@ Anthropic이 한 OAuth 계정에 구조화된 `oauth_not_allowed_for_organizatio
 
 ```bash
 claude /login
-teamclaude import
+teamcodex import
 ```
 
 ## Codex 다계정 설정
@@ -223,17 +236,17 @@ Claude 프록시의 기본 포트는 `3456`이므로 두 서버를 동시에 실
 
 ```bash
 # 공식 Codex OAuth를 각각 격리된 CODEX_HOME에서 실행
-teamclaude codex login --name codex-pro-1
-teamclaude codex login --name codex-pro-2
+teamcodex codex login --name codex-pro-1
+teamcodex codex login --name codex-pro-2
 
 # Codex 프록시와 대시보드 시작
-teamclaude codex server
+teamcodex codex server
 
 # 다른 터미널에서 Codex CLI 실행
-teamclaude codex run
+teamcodex codex run
 
 # 비대화형 실행
-teamclaude codex run -- exec "summarize this repository"
+teamcodex codex run -- exec "summarize this repository"
 ```
 
 Codex는 TUI 프로세스가 시작될 때 `model_provider`를 고정합니다. 따라서 이미
@@ -262,14 +275,14 @@ provider 인자를 함께 기록하므로 이후 탭 복원도 프록시 경로�
 
 ```bash
 codex login
-teamclaude codex import --name codex-pro-1
+teamcodex codex import --name codex-pro-1
 ```
 
-`teamclaude codex login` 방식이 권장됩니다. 이 방식은 임시 `CODEX_HOME`에서
+`teamcodex codex login` 방식이 권장됩니다. 이 방식은 임시 `CODEX_HOME`에서
 로그인을 수행하므로 TeamCodex와 일반 `~/.codex/auth.json`이 동일한 refresh
 token을 서로 갱신하며 충돌하지 않습니다.
 
-`teamclaude codex run`이 주입하는 provider는 `requires_openai_auth = false`로
+`teamcodex codex run`이 주입하는 provider는 `requires_openai_auth = false`로
 동작합니다. 프록시가 풀 계정의 자격 증명을 직접 주입하므로 로컬 Codex CLI에
 별도의 ChatGPT 로그인이 없어도 되고, `~/.codex/auth.json`이 만료·폐기되어도
 로그인 화면이 `codex run`을 막지 않습니다.
@@ -349,33 +362,33 @@ Hermes는 하나의 고정 주소만 사용하고, 실제 계정 선택·갱신�
 ### OAuth 로그인
 
 ```bash
-teamclaude login
+teamcodex login
 ```
 
 ### Claude Code에서 가져오기
 
 ```bash
-teamclaude import
-teamclaude import --name work
+teamcodex import
+teamcodex import --name work
 ```
 
 ### API key 계정
 
 ```bash
-teamclaude api --name production
+teamcodex api --name production
 ```
 
 ## 서버와 대시보드
 
 ```bash
-teamclaude server
-teamclaude status
-teamclaude accounts
-teamclaude stop
-teamclaude restart
+teamcodex server
+teamcodex status
+teamcodex accounts
+teamcodex stop
+teamcodex restart
 ```
 
-TTY에서 `teamclaude server` 또는 `teamclaude codex server`를 실행하면
+TTY에서 `teamcodex server` 또는 `teamcodex codex server`를 실행하면
 전체 화면 대시보드가 열립니다.
 
 | 키 | 동작 |
@@ -525,8 +538,15 @@ surface→workspace topology가 모두 일치할 때만 동작합니다. 세션�
 1차 클라이언트에게 기대하는 형태가 아닌 요청과, 브라우저 컨텍스트 헤더가 붙은 요청을 거부하기 때문입니다.
 클라이언트가 자기 설정으로는 둘 다 고칠 수 없어서, 프록시가 **전용 경로 prefix에서만** 대신 맞춰 줍니다.
 
-켜기 전에 이 문서 앞쪽 "이용약관에 문제가 없나요?" 절을 읽으십시오. 이 표면은 프록시의 다른 부분과 달리
-**서드파티 클라이언트의 트래픽을 중계**합니다.
+켜기 전에 정리할 게 두 가지 있습니다.
+
+먼저 이 문서 앞쪽 "이용약관에 문제가 없나요?" 절을 읽으십시오. 이 표면은 프록시의 다른 부분과 달리
+**서드파티 클라이언트의 트래픽을 중계**합니다. 그리고 그 클라이언트에게 넘기는 풀은 **본인 구독**입니다.
+이 표면은 이미 결제한 계정을 본인 브라우저나 에디터에서도 쓰라고 있는 것이지, URL과 키를 돌려 쓰라고
+있는 게 아닙니다. 둘 다 받은 사람은 누구든 본인 로그인으로 본인 쿼터를 씁니다.
+
+그리고 기본 브랜치 빌드가 필요합니다(`npm i -g github:sangrokjung/teamclaude`). npm에 올라간 릴리스는
+이 표면보다 앞선 판이라 관련 코드가 아예 없습니다.
 
 ```json
 {
@@ -542,12 +562,17 @@ surface→workspace topology가 모두 일치할 때만 동작합니다. 세션�
 
 1. `apiKey`를 자기 비밀값으로 바꿉니다(`openssl rand -base64 24`). 위 예시 값은 **의도적으로 거부**되므로
    그대로 복사하면 표면이 켜지지 않습니다.
-2. `teamclaude restart`를 실행합니다. BYOK 설정은 서버 기동 시 한 번만 해석되고, TUI **R** 리로드는
+2. `teamcodex restart`를 실행합니다. BYOK 설정은 서버 기동 시 한 번만 해석되고, TUI **R** 리로드는
    계정만 다시 읽어서 표면이 꺼진 채로 남습니다.
 3. 클라이언트의 base URL을 `http://127.0.0.1:3456/byok`로, API 키를 그 비밀값으로 지정합니다.
 
 켜졌는지는 `/teamclaude/status`에 `byok` 객체(`inflight`/`admitted`/`rejected`/`injected`)가 생기는지로
-확인합니다. `null`이면 켜지지 않은 것이고, 이유가 `[TeamClaude] BYOK surface disabled: ...`로 로그에 남습니다.
+확인합니다. 여기서 실패 두 가지가 비슷해 보이니 키 자체를 보십시오.
+
+- `byok`가 있는데 `null`이면 표면이 켜지길 거부한 것이고, 이유가 `[TeamClaude] BYOK surface disabled: ...`로
+  로그에 남습니다. 설정을 고치면 됩니다.
+- `byok` 키가 **아예 없으면** 빌드가 이 표면보다 앞선 판입니다. 설정을 어떻게 고쳐도 생기지 않고 그 로그도
+  찍히지 않습니다. 기본 브랜치에서 다시 설치하십시오.
 
 주의할 점:
 

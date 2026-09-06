@@ -9,7 +9,7 @@ when account names changed or another process edited the config concurrently.
 
 ## Goal
 
-Add a fail-closed `teamclaude reauth <name> [--account-uuid UUID]` flow that
+Add a fail-closed `teamcodex reauth <name> [--account-uuid UUID]` flow that
 replaces credentials only after the newly authenticated profile proves it is
 the selected existing account.
 
@@ -78,7 +78,7 @@ the selected existing account.
 
 1. Merge the CLI, tests, and README contract through a reviewed PR.
 2. The menu-bar app invokes the command with both account name and UUID.
-3. Operators can use `teamclaude status` after reauthentication to confirm recovery.
+3. Operators can use `teamcodex status` after reauthentication to confirm recovery.
 
 ## Rollback
 

@@ -2,7 +2,7 @@
 
 ## Problem
 
-TeamClaude의 Claude recovery는 `teamclaude run`이 Claude Code의 부모 프로세스일
+TeamClaude의 Claude recovery는 `teamcodex run`이 Claude Code의 부모 프로세스일
 때만 동작한다. 사용자가 평소처럼 `claude`를 실행하거나, wrapper 적용 전에 시작된
 `qjc-worker` 세션을 계속 사용하면 벤더 Claude 바이너리가 직접 실행되어 transcript
 감시, account rotation, timeout reopen을 모두 우회한다.
@@ -72,7 +72,7 @@ user / qjc-worker / automation
        transparent `claude`
               │
               ▼
-        `teamclaude run`
+        `teamcodex run`
               │
               ▼
     `runClaudeWithRecovery()`
@@ -190,7 +190,7 @@ prompt의 재전송·자동 수정은 금지한다. 같은 session을 보존한 
 ### Real-path E2E
 
 - `zsh -ic`, `zsh -lc`, qjc-worker 격리 harness에서 `claude`의 parent chain에
-  `teamclaude run`이 존재하고 `TEAMCLAUDE_SESSION_SUPERVISED=1`이다.
+  `teamcodex run`이 존재하고 `TEAMCLAUDE_SESSION_SUPERVISED=1`이다.
 - 실제 PATH의 첫 `claude`, `/opt/homebrew/bin/claude`, qjc-worker wrapper가 같은
   launcher contract를 만족한다.
 - synthetic transcript에서 attempt-1/attempt-2 marker와 session ID를 측정해 중복
@@ -214,8 +214,8 @@ prompt의 재전송·자동 수정은 금지한다. 같은 session을 보존한 
 4. 실행 중인 legacy session 목록과 exact session ID를 기록하고, 각 세션은 종료 시
    또는 현재 terminal failure에서 launcher 아래로 한 번 재개한다.
 5. main PC에 같은 파일 checksum을 배포하고 새 shell 및 qjc-worker E2E를 통과시킨다.
-6. README와 incident runbook의 수동 `teamclaude run` 지시를 평상시 `claude`, 진단용
-   `teamclaude run`, 비상 우회 `claude-vendor`로 구분한다.
+6. README와 incident runbook의 수동 `teamcodex run` 지시를 평상시 `claude`, 진단용
+   `teamcodex run`, 비상 우회 `claude-vendor`로 구분한다.
 
 ## Rollback
 

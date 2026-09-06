@@ -729,7 +729,7 @@ test('supervisor preserves worker session affinity for a public keep-alive conne
   }
 });
 
-test('teamclaude run starts a missing proxy before launching Claude Code', { timeout: 15000 }, async t => {
+test('teamcodex run starts a missing proxy before launching Claude Code', { timeout: 15000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'teamclaude-run-autostart-'));
   const configPath = join(dir, 'config.json');
   const fakeClaude = join(dir, 'claude');

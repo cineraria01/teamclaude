@@ -6,7 +6,7 @@
 
 ## 증상
 
-`teamclaude run`으로 시작한 Claude Code가 다음 사용자 메시지와 HTTP 403으로 종료됩니다.
+`teamcodex run`으로 시작한 Claude Code가 다음 사용자 메시지와 HTTP 403으로 종료됩니다.
 
 ```text
 Your organization has disabled Claude subscription access for Claude Code
@@ -27,15 +27,15 @@ TeamClaude는 이 exact error code를 반환한 OAuth account만 `error`로 격�
 
 ## 확인 절차
 
-1. Claude Code를 일반 `claude`가 아니라 `teamclaude run`으로 시작했는지 확인합니다.
-2. `teamclaude status`에서 문제 account가 `error`로 바뀌고 다른 active account가 선택됐는지 확인합니다.
-3. 수정 배포 직후라면 별도 터미널에서 `teamclaude restart`하고 listener와 status를 다시 확인합니다. 실행 중인 Claude 세션 내부에서 proxy를 중지하지 않습니다.
+1. Claude Code를 일반 `claude`가 아니라 `teamcodex run`으로 시작했는지 확인합니다.
+2. `teamcodex status`에서 문제 account가 `error`로 바뀌고 다른 active account가 선택됐는지 확인합니다.
+3. 수정 배포 직후라면 별도 터미널에서 `teamcodex restart`하고 listener와 status를 다시 확인합니다. 실행 중인 Claude 세션 내부에서 proxy를 중지하지 않습니다.
 4. 모든 account가 `error`면 각 조직 관리 설정에서 Claude Code subscription access 허용 여부를 확인합니다.
 
 ## 복구
 
-- 조직 정책이 수정된 뒤 해당 account를 `teamclaude import` 또는 `teamclaude login`으로 다시 검증합니다.
-- 즉시 우회가 필요하면 `teamclaude disable <name>`으로 문제 account를 제외합니다.
+- 조직 정책이 수정된 뒤 해당 account를 `teamcodex import` 또는 `teamcodex login`으로 다시 검증합니다.
+- 즉시 우회가 필요하면 `teamcodex disable <name>`으로 문제 account를 제외합니다.
 - API key 자동 전환이나 source Claude config 수정은 하지 않습니다.
 
 ## 재발 확인

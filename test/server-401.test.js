@@ -352,7 +352,7 @@ test('a cascade leaves a refresh-failed account parked with its own reason', asy
 // arrive already parked by their OWN evidence. Otherwise a fleet that merely
 // contains one degraded account (common) inflates the count, and the next
 // account — genuinely revoked, with no refresh to fall back on — trips the
-// guard and stays in rotation, invisible in `teamclaude status`.
+// guard and stays in rotation, invisible in `teamcodex status`.
 test('an account parked by its own failed refresh does not count toward the cascade', async () => {
   const upstream = http.createServer((_req, res) => {
     res.writeHead(401, { 'content-type': 'application/json' });
