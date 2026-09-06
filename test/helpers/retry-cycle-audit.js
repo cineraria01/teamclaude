@@ -12,13 +12,6 @@
 // Text matching would let a parenthesised argument, an alias, or a
 // destructuring reset slip through (Codex cross-model review, 2026-09-06).
 
-const KEYWORDS = new Set([
-  'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue',
-  'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends', 'finally',
-  'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'new', 'of',
-  'return', 'super', 'switch', 'this', 'throw', 'try', 'typeof', 'var', 'void',
-  'while', 'with', 'yield', 'static', 'get', 'set',
-]);
 // After these a `/` starts a regex literal rather than a division.
 // Every entry is a reserved word in strict-mode module code (`yield` and
 // `await` included), so an identifier can never spell one of them. `of` is
@@ -74,9 +67,12 @@ export function tokenizeJs(source) {
     if (prev && prev.type === 'punct' && prev.value === '}' && prev.closes !== 'object') {
       throw new Error(`ambiguous "/" after "}" at line ${line} — wrap the regex in parentheses`);
     }
-    if (prev && prev.type === 'ident' && prev.value === 'of') {
+    const beforePrev = tokens[tokens.length - 2];
+    const property = beforePrev && beforePrev.type === 'punct' && (beforePrev.value === '.' || beforePrev.value === '?.');
+    if (prev && prev.type === 'ident' && prev.value === 'of' && !property) {
       throw new Error(`ambiguous "/" after "of" at line ${line} — wrap the operand in parentheses`);
     }
+    if (prev && prev.type === 'ident' && property) return false; // `obj.return / 2` is a division
     return !endsExpression(prev);
   };
   const parenKinds = []; // true when the `(` follows if/while/for/with
@@ -87,6 +83,14 @@ export function tokenizeJs(source) {
     if (!prev) return 'block';
     if (prev.type === 'punct') {
       if (prev.value === '${') return 'object';
+      if (prev.value === ':') {
+        // `case x: {` / `default: {` / `label: {` open blocks; `k: {` and `c ? a : {` open objects.
+        const a = tokens[tokens.length - 2];
+        const b = tokens[tokens.length - 3];
+        if (isIdent(a, 'default') || isIdent(b, 'case')) return 'block';
+        if (isIdent(a) && (!b || (b.type === 'punct' && (b.value === ';' || b.value === '{' || b.value === '}')))) return 'block';
+        return 'object';
+      }
       return (prev.value === ')' || prev.value === ']' || prev.value === ';' || prev.value === '}'
         || prev.value === '{' || prev.value === '=>') ? 'block' : 'object';
     }
@@ -178,14 +182,23 @@ export function tokenizeJs(source) {
     i += punct.length;
     if (punct === '(') {
       const prev = tokens[tokens.length - 1];
-      parenKinds.push(Boolean(prev && prev.type === 'ident' && CONTROL_FLOW_PAREN.has(prev.value)));
+      const beforePrev = tokens[tokens.length - 2];
+      const property = beforePrev && beforePrev.type === 'punct' && (beforePrev.value === '.' || beforePrev.value === '?.');
+      parenKinds.push(Boolean(prev && prev.type === 'ident' && CONTROL_FLOW_PAREN.has(prev.value) && !property));
     }
     if (punct === ')') {
       push('punct', punct, start);
       tokens[tokens.length - 1].controlFlow = parenKinds.pop() === true;
       continue;
     }
-    if (punct === '{') { braceKinds.push(braceKind(tokens[tokens.length - 1])); braceDepth++; }
+    if (punct === '{') {
+      const kind = braceKind(tokens[tokens.length - 1]);
+      braceKinds.push(kind);
+      braceDepth++;
+      push('punct', punct, start);
+      tokens[tokens.length - 1].opens = kind;
+      continue;
+    }
     if (punct === '}') {
       braceDepth--;
       const closes = braceKinds.pop();
@@ -212,7 +225,6 @@ export function tokenizeJs(source) {
 
 function isPunct(token, value) { return Boolean(token) && token.type === 'punct' && token.value === value; }
 function isIdent(token, value) { return Boolean(token) && token.type === 'ident' && (value === undefined || token.value === value); }
-function isKeyword(token) { return isIdent(token) && KEYWORDS.has(token.value); }
 
 /** For each token index, the index of its matching bracket (both directions). */
 function matchBrackets(tokens) {
@@ -259,21 +271,101 @@ const argText = tokens => tokens.map(t => t.value).join(' ');
  * (object property name / member access — not the variable), or 'param' (the
  * parameter of `fn` itself).
  */
+/**
+ * `(retryCount) = 1`, `((retryCount))++`, `[(retryCount)] = xs`: a grouping
+ * whose only content is the identifier is transparent for assignment.
+ * Returns [lo, hi] — the token range to classify as if it were the
+ * identifier — after peeling such groupings (never a call, parameter list,
+ * or control-flow parenthesis).
+ */
+function peelGroupings(tokens, match, index) {
+  let lo = index;
+  let hi = index;
+  for (;;) {
+    const open = tokens[lo - 1];
+    const close = tokens[hi + 1];
+    if (!isPunct(open, '(') || !isPunct(close, ')') || match[lo - 1] !== hi + 1) break;
+    const beforeOpen = tokens[lo - 2];
+    const afterClose = tokens[hi + 2];
+    if (isPunct(afterClose, '=>') || isPunct(afterClose, '{')) break; // parameter list / control flow
+    if (beforeOpen && beforeOpen.type === 'ident' && !REGEX_AFTER_KEYWORD.has(beforeOpen.value)) break; // call / catch / function / keyword head
+    if (isPunct(beforeOpen, ']') || isPunct(beforeOpen, '*')) break; // call on a member / generator
+    if (isPunct(beforeOpen, ')') && beforeOpen.controlFlow !== true) break; // call on a call result
+    lo -= 1;
+    hi += 1;
+  }
+  return [lo, hi];
+}
+
+/** Index of the innermost enclosing bracket opener of `index`, or -1. */
+function innermostOpener(tokens, index) {
+  let depth = 0;
+  for (let k = index - 1; k >= 0; k--) {
+    const token = tokens[k];
+    if (token.type !== 'punct') continue;
+    if (token.value === ')' || token.value === ']' || token.value === '}') { depth++; continue; }
+    if (OPENERS[token.value] || token.value === '${') {
+      if (depth > 0) { depth--; continue; }
+      return k;
+    }
+  }
+  return -1;
+}
+
+function isClassBodyOpener(tokens, k) {
+  if (k < 0 || !isPunct(tokens[k], '{')) return false;
+  const a = tokens[k - 1];
+  const b = tokens[k - 2];
+  return isIdent(a, 'class') || (isIdent(a) && (isIdent(b, 'class') || isIdent(b, 'extends')));
+}
+
+/** Is the innermost enclosing `{` of `index` a class body? */
+function insideClassBody(tokens, match, index) {
+  return isClassBodyOpener(tokens, innermostOpener(tokens, index));
+}
+
+/** Is token `index` directly inside an object literal or a class body (a member position)? */
+function inMemberPosition(tokens, index) {
+  const open = innermostOpener(tokens, index);
+  if (open < 0 || !isPunct(tokens[open], '{')) return false;
+  return tokens[open].opens === 'object' || isClassBodyOpener(tokens, open);
+}
+
+/** `let a, retryCount;` — a declarator list without an initializer. */
+function inDeclaratorList(tokens, match, index) {
+  let k = index - 1;
+  while (k >= 0) {
+    const token = tokens[k];
+    if (token.type === 'punct') {
+      if (token.value === ')' || token.value === ']' || token.value === '}') { k = match[k] - 1; continue; }
+      if (OPENERS[token.value] || token.value === '${' || token.value === ';' || token.value === '=>') return false;
+    }
+    if (isIdent(token, 'let') || isIdent(token, 'const') || isIdent(token, 'var')) return true;
+    k--;
+  }
+  return false;
+}
+
 function classifyParamToken(tokens, match, index, fn) {
-  const prev = tokens[index - 1];
-  const next = tokens[index + 1];
-  if (isPunct(prev, '.') || isPunct(prev, '?.')) return 'key';
+  const [lo, hi] = peelGroupings(tokens, match, index);
+  const prev = tokens[lo - 1];
+  const next = tokens[hi + 1];
+  if (isPunct(prev, '.') || isPunct(prev, '?.') || isPunct(prev, '#')) return 'key';
   if (isPunct(next, ':') && (isPunct(prev, '{') || isPunct(prev, ','))) return 'key';
+  if (isPunct(prev, '[') && isPunct(next, ']') && isPunct(tokens[hi + 2], ':')
+      && (isPunct(tokens[lo - 2], '{') || isPunct(tokens[lo - 2], ','))) return 'read'; // computed key `{ [retryCount]: x }`
+  if (insideClassBody(tokens, match, lo)) return 'key'; // class field / method name
   if (isPunct(next, '++') || isPunct(next, '--') || isPunct(prev, '++') || isPunct(prev, '--')) return 'write';
   if (isIdent(prev, 'let') || isIdent(prev, 'const') || isIdent(prev, 'var')) return 'binding';
   if (isIdent(prev, 'function') || isIdent(prev, 'class')
-      || (isPunct(prev, '*') && isIdent(tokens[index - 2], 'function'))) return 'binding'; // declaration names
+      || (isPunct(prev, '*') && isIdent(tokens[lo - 2], 'function'))) return 'binding'; // declaration names
   if (isPunct(next, '=>')) return 'binding'; // `retryCount => …` (no parenthesis to walk)
   if (isIdent(next, 'of') || isIdent(next, 'in')) return 'write';
+  if (isPunct(prev, ',') && inDeclaratorList(tokens, match, lo)) return 'binding'; // `let a, retryCount;`
   // The enclosing brackets decide BEFORE a trailing `=` is read as a write:
   // `(retryCount = 0) => …` is a parameter binding with a default, not a
   // write (Codex round on ec8b30f).
-  const enclosure = classifyEnclosure(tokens, match, index, fn);
+  const enclosure = classifyEnclosure(tokens, match, lo, fn);
   if (enclosure === 'binding' || enclosure === 'param' || enclosure === 'write') return enclosure;
   if (next && next.type === 'punct' && ASSIGNMENT_OPS.has(next.value)) return 'write';
   return 'read';
@@ -332,9 +424,13 @@ function classifyEnclosure(tokens, match, index, fn) {
           continue;
         }
         // '('
+        // `if (…) {` is control flow — unless the keyword is a property access
+        // or a member name directly inside an object literal / class body.
+        const controlFlowHead = isIdent(beforeOpen) && (CONTROL_FLOW_PAREN.has(beforeOpen.value) || beforeOpen.value === 'switch')
+          && !isPunct(tokens[k - 2], '.') && !isPunct(tokens[k - 2], '?.') && !inMemberPosition(tokens, k - 1);
         const isParamList = isPunct(afterClose, '=>') || isIdent(beforeOpen, 'function') || isIdent(beforeOpen, 'catch')
-          || (isIdent(beforeOpen) && !isKeyword(beforeOpen)
-            && (isIdent(tokens[k - 2], 'function') || isPunct(afterClose, '{')));
+          || (isIdent(beforeOpen) && isIdent(tokens[k - 2], 'function'))
+          || (isPunct(afterClose, '{') && !controlFlowHead); // any method/function head: name, keyword, [computed], 'string', *, function*
         if (isParamList) {
           if (elementRole(tokens, match, k, index) === 'default') return 'read'; // `(x = retryCount) => x`
           if (isIdent(tokens[k - 2], 'function') && isIdent(beforeOpen, fn)) return 'param';

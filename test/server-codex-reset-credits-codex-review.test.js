@@ -596,6 +596,7 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
   const { auditRetryCycle, tokenizeJs } = await import('./helpers/retry-cycle-audit.js');
   const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
   const helperCall = 'restartRetryCycle();';
+  const RECURSE = 'forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir)';
   assert.ok(source.includes(helperCall));
   const replaceOnce = (needle, replacement) => {
     assert.ok(source.includes(needle), `mutant anchor missing: ${needle}`);
@@ -665,6 +666,34 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['computed-key pattern target', replaceOnce(helperCall, '({ [reqId]: retryCount } = { [reqId]: 1 });')],
     ['inner arrow parameter passes the bare allowlisted name', replaceOnce(helperCall, 'const inner = (retryCount) => forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir); void inner;')],
     ['IIFE write', replaceOnce(helperCall, '(() => { retryCount = 1; })();')],
+    // Claude skeptic workflow round 2 on 0af6ced (bindings A/B, lexer 2).
+    ['anonymous generator expression parameter', replaceOnce(helperCall, `const g = function* (retryCount) { yield ${RECURSE}; }; void g;`)],
+    ['anonymous async generator expression parameter', replaceOnce(helperCall, `const g = async function* (retryCount) { yield ${RECURSE}; }; void g;`)],
+    ['keyword-named method parameter (get)', replaceOnce(helperCall, `const o = { get(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['keyword-named method parameter (if)', replaceOnce(helperCall, `const o = { if(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['keyword-named class method parameter (static static)', replaceOnce(helperCall, `class K { static static(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['keyword-named class method parameter (while)', replaceOnce(helperCall, `class K { while(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['computed method name parameter', replaceOnce(helperCall, `const o = { [reqId](retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['string method name parameter', replaceOnce(helperCall, `const o = { 'm'(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['generator computed method parameter', replaceOnce(helperCall, `const o = { *[reqId](retryCount) { yield ${RECURSE}; } }; void o;`)],
+    ['declarator list without initializer (let)', replaceOnce(helperCall, `if (ctx) { let a, retryCount; return ${RECURSE}; }`)],
+    ['declarator list without initializer (for-let head)', replaceOnce(helperCall, `for (let i = 0, retryCount; i < 1; i++) return ${RECURSE};`)],
+    ['declarator list without initializer (var in nested function)', replaceOnce(helperCall, `const inner = () => { var a, retryCount; return ${RECURSE}; }; void inner;`)],
+    ['parenthesised assignment target', replaceOnce(helperCall, '(retryCount) = 1;')],
+    ['parenthesised compound assignment target', replaceOnce(helperCall, '(retryCount) ??= 1;')],
+    ['doubly parenthesised assignment target', replaceOnce(helperCall, '((retryCount)) = 1;')],
+    ['parenthesised postfix update', replaceOnce(helperCall, '(retryCount)++;')],
+    ['parenthesised prefix update', replaceOnce(helperCall, '++(retryCount);')],
+    ['parenthesised array-pattern target', replaceOnce(helperCall, '[(retryCount)] = [1];')],
+    ['parenthesised object-pattern target', replaceOnce(helperCall, '({ n: (retryCount) } = { n: 1 });')],
+    ['parenthesised rest-pattern target', replaceOnce(helperCall, '[...(retryCount)] = [1];')],
+    ['parenthesised for-of target', replaceOnce(helperCall, 'for ((retryCount) of [1]) break;')],
+    ['parenthesised for-in target', replaceOnce(helperCall, 'for ((retryCount) in { a: 1 }) break;')],
+    ['parenthesised target after a control-flow parenthesis', replaceOnce(helperCall, 'if (ctx) (retryCount) = 1;')],
+    ['parenthesised target as a return value', replaceOnce(helperCall, 'return (retryCount) = 1;')],
+    ['second parenthesised write inside the helper', replaceOnce('retryCount = 0;', 'retryCount = 0; (retryCount) = 5;')],
+    ['member-access control-flow keyword desyncs the regex heuristic (write)', replaceOnce(helperCall, 'ctx.for(1) /(retryCount = 9)/ 2;')],
+    ['member-access control-flow keyword desyncs the regex heuristic (call)', replaceOnce(helperCall, 'ctx.while(1) /forwardRequest(req, res, body, accountManager, upstream, 9, hooks, reqId, ctx, logDir)/ 2;')],
   ];
   const detected = [];
   for (const [name, mutated] of mutants) {
@@ -704,6 +733,14 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
       try { void 0; } catch (err) { void err; }
       retryCount: for (;;) break retryCount;
       const g = x => x + retryCount; void g;
+      const K = class { retryCount = 5; static retryCount = 6; #retryCount = 0; bump() { this.#retryCount = 1; return #retryCount in this; } }; void K;
+      const { [retryCount]: picked } = ctx; void picked;
+      const v = ctx.of / 2 + ctx.for(1) / 2; void v;
+      const o3 = { if(x) { return x + retryCount; }, m() { if (retryCount) { return 1; } return 2; } }; void o3;
+      switch (reqId) { case 1: { if (retryCount) { break; } break; } default: { while (retryCount) { break; } } }
+      let a1 = retryCount, b1 = 1; void a1; void b1;
+      if (ctx) (retryCount);
+      const q = (retryCount) + 1; void q;
       if (retryCount < 3) return forwardRequest(req, res, body, am, up, retryCount + 1, hooks, id, ctx, dir);
       restartRetryCycle();
       return forwardRequest(req, res, body, am, up, 0, hooks, id, ctx, dir);
