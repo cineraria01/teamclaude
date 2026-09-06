@@ -575,14 +575,20 @@ test('structural guard: every forwardRequest recursion and every retryCount writ
   assert.ok(audit.calls.filter(c => c.retryArg === '0').length >= 8, 'fresh-cycle recursions (initial dispatch + restarts)');
   assert.equal(audit.writes.length, 1, 'exactly one retryCount write, inside the helper');
 
-  // The flag is re-armed in exactly two places: the entry guard and the helper.
-  const reArms = [...source.matchAll(/ctx\.resetCreditBackstopYielded = false/g)];
+  // The flag is re-armed in exactly two places: the entry guard and the
+  // helper. Counted on the token stream (comments and strings do not count).
+  const { tokens, helperRange } = audit;
+  const seq = (at, ...values) => values.every((v, k) => tokens[at + k] && tokens[at + k].value === v);
+  const reArms = tokens.map((_, at) => at).filter(at => seq(at, 'ctx', '.', 'resetCreditBackstopYielded', '=', 'false', ';'));
   assert.equal(reArms.length, 2, `re-arm assignments: ${reArms.length}`);
-  assert.match(source, /if \(retryCount === 0\) ctx\.resetCreditBackstopYielded = false;/, 'entry re-arm present');
-  const helperStart = audit.tokens[audit.helperRange[0]].start;
-  const helperEnd = audit.tokens[audit.helperRange[1]].end;
-  assert.ok(reArms.some(m => m.index > helperStart && m.index < helperEnd), 'helper re-arms');
-  assert.ok((source.match(/restartRetryCycle\(\);/g) || []).length >= 2, 'in-loop restarts use the helper');
+  const entry = reArms.find(at => seq(at - 6, 'if', '(', 'retryCount', '===', '0', ')'));
+  assert.ok(entry !== undefined, 'entry re-arm guarded by retryCount === 0');
+  assert.ok(reArms.some(at => at > helperRange[0] && at < helperRange[1]), 'helper re-arms');
+  const helperCalls = tokens.filter((_, at) => seq(at, 'restartRetryCycle', '(', ')', ';')).length;
+  assert.ok(helperCalls >= 2, `in-loop restarts use the helper (found ${helperCalls})`);
+  // No other write to the flag exists except the single disarm in the backstop.
+  const flagWrites = tokens.map((_, at) => at).filter(at => seq(at, 'ctx', '.', 'resetCreditBackstopYielded', '='));
+  assert.equal(flagWrites.length, 3, `flag writes: 2 re-arms + 1 disarm, found ${flagWrites.length}`);
 });
 
 test('structural guard self-test: the lexical audit catches the evasions text matching missed', async () => {
@@ -635,11 +641,28 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['async arrow parameter shadowing', replaceOnce(helperCall, 'const f = async (a, retryCount) => retryCount; void f;')],
     ['forwardRequest.call', replaceOnce(helperCall, 'return forwardRequest.call(null, req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
     ['optional call', replaceOnce(helperCall, 'return forwardRequest?.(req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
+    // Claude skeptic workflow on a0a0ea5 — lexer ambiguities and arity.
+    ['function-expression body followed by a division hides a write', replaceOnce(helperCall, 'const f = function(){} /(retryCount = 99)/ 2; void f;')],
+    ['function-expression body followed by a division hides a call', replaceOnce(helperCall, 'const f = function(){} /forwardRequest(req, res, body, accountManager, upstream, 99, hooks, reqId, ctx, logDir)/ 2; void f;')],
+    ['identifier named of followed by a division hides a call', replaceOnce(helperCall, 'const of = 2; const x = of /forwardRequest(req, res, body, accountManager, upstream, 99, hooks, reqId, ctx, logDir)/ 2; void x;')],
+    ['identifier named of followed by a division hides a write', replaceOnce(helperCall, 'const of = 2; const x = of /(retryCount = 99)/ 2; void x;')],
+    ['control-flow parenthesis followed by a template-opening regex swallows a write', replaceOnce(helperCall, 'if (ctx) /`/.test(reqId); retryCount = 9; void `x`;')],
+    ['spread argument shifts the retry position', replaceOnce(helperCall, 'const pair = [upstream, 7]; return forwardRequest(req, res, body, accountManager, ...pair, retryCount, hooks, reqId, ctx, logDir);')],
+    ['spread argument at the tail', replaceOnce(helperCall, 'const tail = [hooks, reqId, ctx, logDir]; return forwardRequest(req, res, body, accountManager, upstream, 0, ...tail);')],
   ];
+  const detected = [];
   for (const [name, mutated] of mutants) {
-    const { violations } = auditRetryCycle(mutated);
-    assert.ok(violations.length > 0, `mutant not detected: ${name}`);
+    let outcome;
+    try {
+      const { violations } = auditRetryCycle(mutated);
+      outcome = violations.length > 0 ? 'violation' : 'clean';
+    } catch (err) {
+      outcome = `throw: ${err.message}`; // fail-closed — the test would fail loudly
+    }
+    assert.notEqual(outcome, 'clean', `mutant not detected: ${name}`);
+    detected.push(`${name} → ${outcome}`);
   }
+  assert.equal(detected.length, mutants.length);
 
   // Decoys inside strings, comments, template literals and regex literals must
   // NOT count, and reads must not be mistaken for writes.
@@ -657,7 +680,8 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
       log(retryCount);
       const rate = {} / 2; let a = 1; a++ / 2; void rate;
       if (a) {}
-      /retryCount = 1/.test('x');
+      (/retryCount = 1/).test('x'); // a regex right after a block '}' is ambiguous → the tokenizer fails closed
+      if (a) /retryCount = 2/.test('x'); // …but after a control-flow ')' it is unambiguous
       const h = (x = retryCount) => x; void h;
       const { z = retryCount } = ctx; void z;
       const [w = retryCount + 1] = [0]; void w;
@@ -671,5 +695,7 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
   assert.deepEqual(clean.violations, []);
   assert.equal(clean.calls.length, 2);
   assert.equal(clean.writes.length, 1);
-  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 2);
+  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 3);
+  assert.throws(() => tokenizeJs('if (a) {}\n/re/.test(s);'), /ambiguous "\/" after "}"/);
+  assert.throws(() => tokenizeJs('const of = 2; const x = of /re/ 2;'), /ambiguous "\/" after "of"/);
 });

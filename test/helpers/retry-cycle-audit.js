@@ -20,10 +20,14 @@ const KEYWORDS = new Set([
   'while', 'with', 'yield', 'static', 'get', 'set',
 ]);
 // After these a `/` starts a regex literal rather than a division.
+// Every entry is a reserved word in strict-mode module code (`yield` and
+// `await` included), so an identifier can never spell one of them. `of` is
+// NOT reserved — a `/` after it is ambiguous and the tokenizer fails closed.
 const REGEX_AFTER_KEYWORD = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'return', 'typeof', 'instanceof', 'in', 'new', 'delete', 'void',
   'throw', 'case', 'do', 'else', 'yield', 'await',
 ]);
+const CONTROL_FLOW_PAREN = new Set(['if', 'while', 'for', 'with']);
 const PUNCTUATORS = [
   '>>>=', '...', '===', '!==', '**=', '<<=', '>>=', '>>>', '&&=', '||=', '??=',
   '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=',
@@ -55,12 +59,27 @@ export function tokenizeJs(source) {
     if (!prev) return false;
     if (prev.type === 'num' || prev.type === 'str' || prev.type === 'tpl' || prev.type === 'regex') return true;
     if (prev.type === 'ident') return !REGEX_AFTER_KEYWORD.has(prev.value);
-    if (prev.value === ')' || prev.value === ']') return true;
+    if (prev.value === ')') return prev.controlFlow !== true; // `if (x) /re/` vs `(a) / b`
+    if (prev.value === ']') return true;
     if (prev.value === '}') return prev.closes === 'object';
     if (prev.value === '++' || prev.value === '--') return prev.postfix === true;
     return false;
   };
-  const regexAllowed = () => !endsExpression(tokens[tokens.length - 1]);
+  // A `/` is a regex start only where an expression cannot continue. Two
+  // spots are ambiguous without a parser and FAIL CLOSED instead of guessing:
+  // after a block/function-body `}` (statement-position regex vs a division
+  // of a function expression) and after the non-reserved word `of`.
+  const regexAllowed = () => {
+    const prev = tokens[tokens.length - 1];
+    if (prev && prev.type === 'punct' && prev.value === '}' && prev.closes !== 'object') {
+      throw new Error(`ambiguous "/" after "}" at line ${line} — wrap the regex in parentheses`);
+    }
+    if (prev && prev.type === 'ident' && prev.value === 'of') {
+      throw new Error(`ambiguous "/" after "of" at line ${line} — wrap the operand in parentheses`);
+    }
+    return !endsExpression(prev);
+  };
+  const parenKinds = []; // true when the `(` follows if/while/for/with
   const braceKind = prev => {
     // `{` opens an object literal when it sits where an expression must
     // start; everywhere else (statement start, after `)`/`=>`/`;`/`}`/`{`,
@@ -157,6 +176,15 @@ export function tokenizeJs(source) {
     if (!punct) throw new Error(`unexpected character ${JSON.stringify(ch)} at line ${line}`);
     const start = i;
     i += punct.length;
+    if (punct === '(') {
+      const prev = tokens[tokens.length - 1];
+      parenKinds.push(Boolean(prev && prev.type === 'ident' && CONTROL_FLOW_PAREN.has(prev.value)));
+    }
+    if (punct === ')') {
+      push('punct', punct, start);
+      tokens[tokens.length - 1].controlFlow = parenKinds.pop() === true;
+      continue;
+    }
     if (punct === '{') { braceKinds.push(braceKind(tokens[tokens.length - 1])); braceDepth++; }
     if (punct === '}') {
       braceDepth--;
@@ -384,6 +412,9 @@ export function auditRetryCycle(source, {
       return;
     }
     const args = splitArgs(tokens, match, index + 1);
+    if (args.some(group => group.some(t => isPunct(t, '...')))) {
+      violations.push(`line ${token.line}: ${fn}(…) uses a spread argument — positional retry argument is indeterminate`);
+    }
     const retryArg = argText(args[paramIndex] || []);
     calls.push({ line: token.line, retryArg });
     if (!allowed.has(retryArg)) {
