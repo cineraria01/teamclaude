@@ -181,6 +181,32 @@
   method/async-arrow parameters, an assignment hidden in a parameter
   default) and a decoy with object-literal division, postfix `++`, a regex
   after a block, defaults, computed keys and a `catch` parameter.
+- Claude skeptic workflows on the audit itself (rounds 15–16, test-only):
+  two 4- and 3-lens hunts (lexer desync, binding semantics, call shapes,
+  invariant scope) with an independent verifier per claim. Round 15
+  confirmed three: `function(){} /(retryCount = 99)/ 2` (a `/` after a
+  function-expression body read as a regex), `const of = 2; of /…/ 2`
+  (`of` is not reserved) and a spread argument shifting the 6th position;
+  twelve ctx-based candidates were refuted as outside the guard's scope.
+  Fixes: a `/` after a block `}` or after the word `of` fails closed
+  (throws), `(` after if/while/for/with is tagged so `if (x) /re/` is a
+  regex, spreads in a `forwardRequest` call are violations, and the re-arm
+  assertions count token sequences (comments cannot satisfy them). Round
+  16 confirmed ten more with four root causes: parameter lists behind
+  keyword/computed/string/generator method heads and anonymous
+  `function*` expressions, `let a, retryCount;` declarator lists,
+  parenthesised targets `(retryCount) = 1` / `(retryCount)++` /
+  `[(retryCount)] = xs` / `for ((retryCount) of xs)` (also inside the
+  helper), and `ctx.for(1) /…/` tagging a property access as control
+  flow. Fixes: any `(…) {` head is a parameter list unless a real
+  control-flow keyword precedes it (object-literal/class-body member
+  position and `case:`/`default:`/label blocks are told apart by tagging
+  `{` tokens), a backward walk to `let`/`const`/`var` marks declarator
+  lists, groupings whose only content is the identifier are peeled before
+  classification, and property accesses never tag control flow. Three
+  false positives fixed (class fields, `#private`, computed-key reads in a
+  pattern); three fail-closed ones documented (named function-expression
+  name, two ASI shapes). Self-test: 83 mutants.
 
 ## Incident / motivation
 
