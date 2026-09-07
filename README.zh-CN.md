@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-200%20passing-58e3a2?style=flat-square" alt="200 项测试通过">
+  <img src="https://img.shields.io/badge/tests-844-58e3a2?style=flat-square" alt="844 项测试">
   <img src="https://img.shields.io/badge/runtime-Node.js%2018%2B-56d8ff?style=flat-square" alt="Node.js 18+">
   <img src="https://img.shields.io/badge/dependencies-zero-8d6cff?style=flat-square" alt="零运行时依赖">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ec6c9c?style=flat-square" alt="MIT 许可证"></a>

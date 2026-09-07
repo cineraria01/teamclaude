@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-821%20passing-58e3a2?style=flat-square" alt="테스트 821개 통과">
+  <img src="https://img.shields.io/badge/tests-844-58e3a2?style=flat-square" alt="테스트 844개">
   <img src="https://img.shields.io/badge/runtime-Node.js%2018%2B-56d8ff?style=flat-square" alt="Node.js 18 이상">
   <img src="https://img.shields.io/badge/dependencies-zero-8d6cff?style=flat-square" alt="런타임 의존성 없음">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ec6c9c?style=flat-square" alt="MIT 라이선스"></a>
