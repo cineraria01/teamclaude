@@ -575,14 +575,20 @@ test('structural guard: every forwardRequest recursion and every retryCount writ
   assert.ok(audit.calls.filter(c => c.retryArg === '0').length >= 8, 'fresh-cycle recursions (initial dispatch + restarts)');
   assert.equal(audit.writes.length, 1, 'exactly one retryCount write, inside the helper');
 
-  // The flag is re-armed in exactly two places: the entry guard and the helper.
-  const reArms = [...source.matchAll(/ctx\.resetCreditBackstopYielded = false/g)];
+  // The flag is re-armed in exactly two places: the entry guard and the
+  // helper. Counted on the token stream (comments and strings do not count).
+  const { tokens, helperRange } = audit;
+  const seq = (at, ...values) => values.every((v, k) => tokens[at + k] && tokens[at + k].value === v);
+  const reArms = tokens.map((_, at) => at).filter(at => seq(at, 'ctx', '.', 'resetCreditBackstopYielded', '=', 'false', ';'));
   assert.equal(reArms.length, 2, `re-arm assignments: ${reArms.length}`);
-  assert.match(source, /if \(retryCount === 0\) ctx\.resetCreditBackstopYielded = false;/, 'entry re-arm present');
-  const helperStart = audit.tokens[audit.helperRange[0]].start;
-  const helperEnd = audit.tokens[audit.helperRange[1]].end;
-  assert.ok(reArms.some(m => m.index > helperStart && m.index < helperEnd), 'helper re-arms');
-  assert.ok((source.match(/restartRetryCycle\(\);/g) || []).length >= 2, 'in-loop restarts use the helper');
+  const entry = reArms.find(at => seq(at - 6, 'if', '(', 'retryCount', '===', '0', ')'));
+  assert.ok(entry !== undefined, 'entry re-arm guarded by retryCount === 0');
+  assert.ok(reArms.some(at => at > helperRange[0] && at < helperRange[1]), 'helper re-arms');
+  const helperCalls = tokens.filter((_, at) => seq(at, 'restartRetryCycle', '(', ')', ';')).length;
+  assert.ok(helperCalls >= 2, `in-loop restarts use the helper (found ${helperCalls})`);
+  // No other write to the flag exists except the single disarm in the backstop.
+  const flagWrites = tokens.map((_, at) => at).filter(at => seq(at, 'ctx', '.', 'resetCreditBackstopYielded', '='));
+  assert.equal(flagWrites.length, 3, `flag writes: 2 re-arms + 1 disarm, found ${flagWrites.length}`);
 });
 
 test('structural guard self-test: the lexical audit catches the evasions text matching missed', async () => {
@@ -590,12 +596,43 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
   const { auditRetryCycle, tokenizeJs } = await import('./helpers/retry-cycle-audit.js');
   const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
   const helperCall = 'restartRetryCycle();';
+  const RECURSE = 'forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir)';
   assert.ok(source.includes(helperCall));
   const replaceOnce = (needle, replacement) => {
     assert.ok(source.includes(needle), `mutant anchor missing: ${needle}`);
     return source.replace(needle, replacement);
   };
   const mutants = [
+    ...['debugger', 'break', 'continue', 'break cycle', 'continue cycle'].map(statement => [
+      `ASI statement preserves grouped write: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { if(false) ${statement}\n(retryCount) = 9; } while(false);`),
+    ]),
+    ...['break', 'continue'].map(statement => [
+      `ASI jump does not consume next-line identifier: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { let divisor = 1; if(false) ${statement}\n divisor / (retryCount = 9) / 2; } while(false);`),
+    ]),
+    ...['break', 'continue', 'break cycle', 'continue cycle'].map(statement => [
+      `ASI jump preserves write: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { if(false) ${statement}\n /\x60/.test(""); retryCount = 9; /\x60/.test(""); } while(false);`),
+    ]),
+    ...['debugger\n /`/.test("");', 'debugger\n{} /`/.test("");', 'let x = 0; x\n++ /`/.lastIndex;'].map(prefix => [
+      `ASI regex preserves write: ${prefix}`,
+      replaceOnce(helperCall, prefix + ' retryCount = 9; /`/.test("");'),
+    ]),
+    ['helper RHS arithmetic is not a zero reset', replaceOnce('retryCount = 0;', 'retryCount = 0 + 99;')],
+    ['helper RHS logical expression is not a zero reset', replaceOnce('retryCount = 0;', 'retryCount = 0 || 99;')],
+    ...[13, 8232, 8233].flatMap(code => [
+      [`line comment terminator ${code} preserves write`, replaceOnce(helperCall, '// comment' + String.fromCharCode(code) + 'retryCount = 9;\n')],
+      [`line comment terminator ${code} preserves call`, replaceOnce(helperCall, '// comment' + String.fromCharCode(code) + RECURSE.replace('upstream, retryCount', 'upstream, 9') + ';\n')],
+    ]),
+    ['for await regex preserves write', replaceOnce(helperCall, 'for await (const x of [1]) /`/.test(""); retryCount = 9; /`/.test("");')],
+    ['for await regex preserves call', replaceOnce(helperCall, 'for await (const x of [1]) /`/.test(""); ' + RECURSE.replace('upstream, retryCount', 'upstream, 9') + '; /`/.test("");')],
+    ['anonymous function heritage preserves shadow binding', replaceOnce(helperCall, `class K extends function() {} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`)],
+    ['named function heritage preserves shadow binding', replaceOnce(helperCall, `class K extends function Base() {} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`)],
+    ...['function Base() {}.constructor', 'function Base() {}.valueOf()'].map(heritage => [
+      `function heritage suffix preserves shadow binding: ${heritage}`,
+      replaceOnce(helperCall, `class K extends ${heritage} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`),
+    ]),
     ['parenthesised argument + retryCount + 2 restart (regex could not enumerate it)',
       replaceOnce(helperCall, 'return forwardRequest(req, res, String(body), accountManager, upstream, retryCount + 2, hooks, reqId, ctx, logDir);')],
     ['multi-line call with a non-allowlisted constant',
@@ -617,11 +654,101 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['helper writes a non-zero value', replaceOnce('retryCount = 0;', 'retryCount = retryCount - retryCount;')],
     ['helper loses its write', replaceOnce('retryCount = 0;', 'void 0;')],
     ['second function named forwardRequest', source + '\nfunction forwardRequest(a, b, c, d, e, retryCount) { return retryCount; }\n'],
+    // Codex round on ec8b30f — the lexical audit's own blind spots.
+    ['default-value arrow parameter (was classified as a write)', replaceOnce(helperCall, 'const f = (retryCount = 0) => retryCount; void f;')],
+    ['default-value function parameter', replaceOnce(helperCall, 'function g(a, retryCount = 0) { return retryCount; } void g;')],
+    ['for-of object-pattern target', replaceOnce(helperCall, 'for ({ retryCount } of [{ retryCount: 4 }]) break;')],
+    ['for-of array-pattern target', replaceOnce(helperCall, 'for ([retryCount] of [[4]]) break;')],
+    ['nested pattern inside a for-of target', replaceOnce(helperCall, 'for ({ q: [retryCount] } of [{ q: [0] }]) break;')],
+    ['direct eval', replaceOnce(helperCall, 'eval("retryCount = 7");')],
+    ['object literal followed by division hides a write', replaceOnce(helperCall, 'const n = {} / (retryCount = 4) / 2; void n;')],
+    ['postfix ++ followed by division hides a call', replaceOnce(helperCall, 'let x = 1; x++ / forwardRequest(req, res, body, accountManager, upstream, 9, hooks, reqId, ctx, logDir) / 2;')],
+    ['catch parameter shadowing', replaceOnce(helperCall, 'try { void 0; } catch (retryCount) { void retryCount; }')],
+    ['for-let initializer', replaceOnce(helperCall, 'for (let i = 0, retryCount = 0; i < 1; i++) void retryCount;')],
+    ['assignment hidden inside a parameter default', replaceOnce(helperCall, 'const f = (x = (retryCount = 0)) => x; void f;')],
+    ['key: target destructuring assignment', replaceOnce(helperCall, '({ n: retryCount } = { n: 0 });')],
+    ['key: target declaration shadowing', replaceOnce(helperCall, 'const { n: retryCount } = ctx; void retryCount;')],
+    ['method parameter shadowing', replaceOnce(helperCall, 'const o = { m(retryCount) { return retryCount; } }; void o;')],
+    ['async arrow parameter shadowing', replaceOnce(helperCall, 'const f = async (a, retryCount) => retryCount; void f;')],
+    ['forwardRequest.call', replaceOnce(helperCall, 'return forwardRequest.call(null, req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
+    ['optional call', replaceOnce(helperCall, 'return forwardRequest?.(req, res, body, accountManager, upstream, 5, hooks, reqId, ctx, logDir);')],
+    // Claude skeptic workflow on a0a0ea5 — lexer ambiguities and arity.
+    ['function-expression body followed by a division hides a write', replaceOnce(helperCall, 'const f = function(){} /(retryCount = 99)/ 2; void f;')],
+    ['function-expression body followed by a division hides a call', replaceOnce(helperCall, 'const f = function(){} /forwardRequest(req, res, body, accountManager, upstream, 99, hooks, reqId, ctx, logDir)/ 2; void f;')],
+    ['identifier named of followed by a division hides a call', replaceOnce(helperCall, 'const of = 2; const x = of /forwardRequest(req, res, body, accountManager, upstream, 99, hooks, reqId, ctx, logDir)/ 2; void x;')],
+    ['identifier named of followed by a division hides a write', replaceOnce(helperCall, 'const of = 2; const x = of /(retryCount = 99)/ 2; void x;')],
+    ['control-flow parenthesis followed by a template-opening regex swallows a write', replaceOnce(helperCall, 'if (ctx) /`/.test(reqId); retryCount = 9; void `x`;')],
+    ['spread argument shifts the retry position', replaceOnce(helperCall, 'const pair = [upstream, 7]; return forwardRequest(req, res, body, accountManager, ...pair, retryCount, hooks, reqId, ctx, logDir);')],
+    ['spread argument at the tail', replaceOnce(helperCall, 'const tail = [hooks, reqId, ctx, logDir]; return forwardRequest(req, res, body, accountManager, upstream, 0, ...tail);')],
+    // Bindings without a bracket to walk.
+    ['arrow parameter without parentheses', replaceOnce(helperCall, 'const f = retryCount => retryCount; void f;')],
+    ['async arrow parameter without parentheses', replaceOnce(helperCall, 'const f = async retryCount => retryCount; void f;')],
+    ['function declaration named retryCount', replaceOnce(helperCall, 'function retryCount() {} void retryCount;')],
+    ['generator declaration named retryCount', replaceOnce(helperCall, 'function* retryCount() {} void retryCount;')],
+    ['class declaration named retryCount', replaceOnce(helperCall, 'class retryCount {} void retryCount;')],
+    ['var redeclaration of the parameter', replaceOnce(helperCall, 'var retryCount; void retryCount;')],
+    ['object-literal property value assignment', replaceOnce(helperCall, 'const o = { k: retryCount = 1 }; void o;')],
+    ['comma-expression write', replaceOnce(helperCall, 'void (reqId, retryCount = 1);')],
+    ['template-expression write', replaceOnce(helperCall, 'void `${retryCount = 1}`;')],
+    ['catch pattern parameter', replaceOnce(helperCall, 'try { void 0; } catch ({ retryCount }) { void retryCount; }')],
+    ['rest parameter', replaceOnce(helperCall, 'const f = (...retryCount) => retryCount; void f;')],
+    ['pattern rest write', replaceOnce(helperCall, '[...retryCount] = [1];')],
+    ['computed-key pattern target', replaceOnce(helperCall, '({ [reqId]: retryCount } = { [reqId]: 1 });')],
+    ['inner arrow parameter passes the bare allowlisted name', replaceOnce(helperCall, 'const inner = (retryCount) => forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir); void inner;')],
+    ['IIFE write', replaceOnce(helperCall, '(() => { retryCount = 1; })();')],
+    // Claude skeptic workflow round 2 on 0af6ced (bindings A/B, lexer 2).
+    ['anonymous generator expression parameter', replaceOnce(helperCall, `const g = function* (retryCount) { yield ${RECURSE}; }; void g;`)],
+    ['anonymous async generator expression parameter', replaceOnce(helperCall, `const g = async function* (retryCount) { yield ${RECURSE}; }; void g;`)],
+    ['keyword-named method parameter (get)', replaceOnce(helperCall, `const o = { get(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['keyword-named method parameter (if)', replaceOnce(helperCall, `const o = { if(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['keyword-named class method parameter (static static)', replaceOnce(helperCall, `class K { static static(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['keyword-named class method parameter (while)', replaceOnce(helperCall, `class K { while(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['multiplication followed by a parenthesised postfix write', replaceOnce(helperCall, 'const n = 2 * (retryCount)++; void n;')],
+    ['keyword property in class heritage before a shadow parameter', replaceOnce(helperCall, `class K extends ctx.for { if(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['class field initializer writes the retry parameter', replaceOnce(helperCall, 'class K { field = retryCount = 99; } new K();')],
+    ['class static field initializer updates the retry parameter', replaceOnce(helperCall, 'class K { static field = ++retryCount; } void K;')],
+    ['class field name followed by a write of the same name', replaceOnce(helperCall, 'class K { retryCount = retryCount = 99; } new K();')],
+    ['class field initializer shadows with an arrow parameter', replaceOnce(helperCall, `class K { field = retryCount => ${RECURSE}; } new K().field(99);`)],
+    ['class field initializer shadows with a function name', replaceOnce(helperCall, 'class K { field = function retryCount() {}; } void K;')],
+    ['class initializer multiplies an object by a retry update', replaceOnce(helperCall, 'class K { field = {} * retryCount++; } new K();')],
+    ['class initializer uses a destructuring write', replaceOnce(helperCall, 'class K { field = [retryCount] = [99]; } new K();')],
+    ['computed method name parameter', replaceOnce(helperCall, `const o = { [reqId](retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['string method name parameter', replaceOnce(helperCall, `const o = { 'm'(retryCount) { return ${RECURSE}; } }; void o;`)],
+    ['generator computed method parameter', replaceOnce(helperCall, `const o = { *[reqId](retryCount) { yield ${RECURSE}; } }; void o;`)],
+    ['declarator list without initializer (let)', replaceOnce(helperCall, `if (ctx) { let a, retryCount; return ${RECURSE}; }`)],
+    ['declarator list without initializer (for-let head)', replaceOnce(helperCall, `for (let i = 0, retryCount; i < 1; i++) return ${RECURSE};`)],
+    ['declarator list without initializer (var in nested function)', replaceOnce(helperCall, `const inner = () => { var a, retryCount; return ${RECURSE}; }; void inner;`)],
+    ['parenthesised assignment target', replaceOnce(helperCall, '(retryCount) = 1;')],
+    ['parenthesised compound assignment target', replaceOnce(helperCall, '(retryCount) ??= 1;')],
+    ['doubly parenthesised assignment target', replaceOnce(helperCall, '((retryCount)) = 1;')],
+    ['parenthesised postfix update', replaceOnce(helperCall, '(retryCount)++;')],
+    ['parenthesised prefix update', replaceOnce(helperCall, '++(retryCount);')],
+    ['parenthesised array-pattern target', replaceOnce(helperCall, '[(retryCount)] = [1];')],
+    ['parenthesised object-pattern target', replaceOnce(helperCall, '({ n: (retryCount) } = { n: 1 });')],
+    ['parenthesised rest-pattern target', replaceOnce(helperCall, '[...(retryCount)] = [1];')],
+    ['parenthesised for-of target', replaceOnce(helperCall, 'for ((retryCount) of [1]) break;')],
+    ['parenthesised for-in target', replaceOnce(helperCall, 'for ((retryCount) in { a: 1 }) break;')],
+    ['parenthesised target after a control-flow parenthesis', replaceOnce(helperCall, 'if (ctx) (retryCount) = 1;')],
+    ['parenthesised target as a return value', replaceOnce(helperCall, 'return (retryCount) = 1;')],
+    ['second parenthesised write inside the helper', replaceOnce('retryCount = 0;', 'retryCount = 0; (retryCount) = 5;')],
+    ['member-access control-flow keyword desyncs the regex heuristic (write)', replaceOnce(helperCall, 'ctx.for(1) /(retryCount = 9)/ 2;')],
+    ['member-access control-flow keyword desyncs the regex heuristic (call)', replaceOnce(helperCall, 'ctx.while(1) /forwardRequest(req, res, body, accountManager, upstream, 9, hooks, reqId, ctx, logDir)/ 2;')],
+    ['keyword-named method inside a class with a call-expression heritage', replaceOnce(helperCall, `class K extends Object.assign(Object) { if(retryCount) { return ${RECURSE}; } } void K;`)],
+    ['keyword-named method inside a class expression with a parenthesised heritage', replaceOnce(helperCall, `const K = class extends (Object) { while(retryCount) { return ${RECURSE}; } }; void K;`)],
   ];
+  const detected = [];
   for (const [name, mutated] of mutants) {
-    const { violations } = auditRetryCycle(mutated);
-    assert.ok(violations.length > 0, `mutant not detected: ${name}`);
+    let outcome;
+    try {
+      const { violations } = auditRetryCycle(mutated);
+      outcome = violations.length > 0 ? 'violation' : 'clean';
+    } catch (err) {
+      outcome = `throw: ${err.message}`; // fail-closed — the test would fail loudly
+    }
+    assert.notEqual(outcome, 'clean', `mutant not detected: ${name}`);
+    detected.push(`${name} → ${outcome}`);
   }
+  assert.equal(detected.length, mutants.length);
 
   // Decoys inside strings, comments, template literals and regex literals must
   // NOT count, and reads must not be mistaken for writes.
@@ -634,9 +761,29 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     const restartRetryCycle = () => { retryCount = 0; };
     async function forwardRequest(req, res, body, am, up, retryCount, hooks, id, ctx, dir) {
       if (retryCount === 0) ctx.flag = false;
-      const o = { retryCount, retryCount: retryCount + 1, n: ctx.retryCount };
+      const o = { retryCount, retryCount: retryCount + 1, n: ctx.retryCount, [retryCount]: 1 };
       console.log(o.retryCount, retryCount >= 3 ? 'x' : 'y', \`\${retryCount}\`);
       log(retryCount);
+      const rate = {} / 2; let a = 1; a++ / 2; void rate;
+      if (a) {}
+      (/retryCount = 1/).test('x'); // a regex right after a block '}' is ambiguous → the tokenizer fails closed
+      if (a) /retryCount = 2/.test('x'); // …but after a control-flow ')' it is unambiguous
+      const h = (x = retryCount) => x; void h;
+      const { z = retryCount } = ctx; void z;
+      const [w = retryCount + 1] = [0]; void w;
+      try { void 0; } catch (err) { void err; }
+      retryCount: for (;;) break retryCount;
+      const g = x => x + retryCount; void g;
+      const K = class { retryCount = 5; static retryCount = 6; #retryCount = 0; bump() { this.#retryCount = 1; return #retryCount in this; } }; void K;
+      class K2 extends Object.assign(Object) { retryCount = 1; static { void retryCount; } } void K2;
+      class K3 extends ctx.for { [retryCount] = 1; retryCount = retryCount + 1; get value() { return retryCount; } } void K3;
+      const { [retryCount]: picked } = ctx; void picked;
+      const v = ctx.of / 2 + ctx.for(1) / 2; void v;
+      const o3 = { if(x) { return x + retryCount; }, m() { if (retryCount) { return 1; } return 2; } }; void o3;
+      switch (reqId) { case 1: { if (retryCount) { break; } break; } default: { while (retryCount) { break; } } }
+      let a1 = retryCount, b1 = 1; void a1; void b1;
+      if (ctx) (retryCount);
+      const q = (retryCount) + 1; void q;
       if (retryCount < 3) return forwardRequest(req, res, body, am, up, retryCount + 1, hooks, id, ctx, dir);
       restartRetryCycle();
       return forwardRequest(req, res, body, am, up, 0, hooks, id, ctx, dir);
@@ -646,5 +793,7 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
   assert.deepEqual(clean.violations, []);
   assert.equal(clean.calls.length, 2);
   assert.equal(clean.writes.length, 1);
-  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 1);
+  assert.equal(tokenizeJs(decoy).filter(t => t.type === 'regex').length, 3);
+  assert.throws(() => tokenizeJs('if (a) {}\n/re/.test(s);'), /ambiguous "\/" after "}"/);
+  assert.throws(() => tokenizeJs('const of = 2; const x = of /re/ 2;'), /ambiguous "\/" after "of"/);
 });
