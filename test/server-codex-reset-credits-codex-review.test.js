@@ -603,7 +603,7 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     return source.replace(needle, replacement);
   };
   const mutants = [
-    ...['debugger\n /`/.test("");', 'let x = 0; x\n++ /`/.lastIndex;'].map(prefix => [
+    ...['debugger\n /`/.test("");', 'debugger\n{} /`/.test("");', 'let x = 0; x\n++ /`/.lastIndex;'].map(prefix => [
       `ASI regex preserves write: ${prefix}`,
       replaceOnce(helperCall, prefix + ' retryCount = 9; /`/.test("");'),
     ]),

@@ -18,7 +18,7 @@
 // NOT reserved — a `/` after it is ambiguous and the tokenizer fails closed.
 const REGEX_AFTER_KEYWORD = new Set([
   'return', 'typeof', 'instanceof', 'in', 'new', 'delete', 'void',
-  'throw', 'case', 'do', 'else', 'yield', 'await', 'debugger',
+  'throw', 'case', 'do', 'else', 'yield', 'await',
 ]);
 const CONTROL_FLOW_PAREN = new Set(['if', 'while', 'for', 'with']);
 const PUNCTUATORS = [
@@ -76,6 +76,7 @@ export function tokenizeJs(source) {
       throw new Error(`ambiguous "/" after "of" at line ${line} — wrap the operand in parentheses`);
     }
     if (prev && prev.type === 'ident' && property) return false; // `obj.return / 2` is a division
+    if (isIdent(prev, 'debugger')) return true;
     return !endsExpression(prev);
   };
   const parenKinds = []; // true when the `(` follows if/while/for/with
