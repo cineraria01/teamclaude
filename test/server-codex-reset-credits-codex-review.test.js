@@ -603,6 +603,14 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     return source.replace(needle, replacement);
   };
   const mutants = [
+    ...['debugger', 'break', 'continue', 'break cycle', 'continue cycle'].map(statement => [
+      `ASI statement preserves grouped write: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { if(false) ${statement}\n(retryCount) = 9; } while(false);`),
+    ]),
+    ...['break', 'continue'].map(statement => [
+      `ASI jump does not consume next-line identifier: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { let divisor = 1; if(false) ${statement}\n divisor / (retryCount = 9) / 2; } while(false);`),
+    ]),
     ...['break', 'continue', 'break cycle', 'continue cycle'].map(statement => [
       `ASI jump preserves write: ${statement}`,
       replaceOnce(helperCall, `cycle: do { if(false) ${statement}\n /\x60/.test(""); retryCount = 9; /\x60/.test(""); } while(false);`),

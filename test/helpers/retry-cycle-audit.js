@@ -78,6 +78,7 @@ export function tokenizeJs(source) {
     if (prev && prev.type === 'ident' && property) return false; // `obj.return / 2` is a division
     if (isIdent(prev, 'debugger') || isIdent(prev, 'break') || isIdent(prev, 'continue')) return true;
     if (isIdent(prev) && (isIdent(beforePrev, 'break') || isIdent(beforePrev, 'continue'))
+        && ![...source.slice(beforePrev.end, prev.start)].some(isLineTerminator)
         && !isPunct(tokens[tokens.length - 3], '.') && !isPunct(tokens[tokens.length - 3], '?.')) return true;
     return !endsExpression(prev);
   };
@@ -296,9 +297,16 @@ function peelGroupings(tokens, match, index) {
     const close = tokens[hi + 1];
     if (!isPunct(open, '(') || !isPunct(close, ')') || match[lo - 1] !== hi + 1) break;
     const beforeOpen = tokens[lo - 2];
+    const beforeHead = tokens[lo - 3];
+    const statementHead = (isIdent(beforeOpen, 'debugger') || isIdent(beforeOpen, 'break') || isIdent(beforeOpen, 'continue'))
+      && !isPunct(beforeHead, '.') && !isPunct(beforeHead, '?.');
+    const jumpLabel = isIdent(beforeOpen) && (isIdent(beforeHead, 'break') || isIdent(beforeHead, 'continue'))
+      && beforeHead.line === beforeOpen.line
+      && !isPunct(tokens[lo - 4], '.') && !isPunct(tokens[lo - 4], '?.');
     const afterClose = tokens[hi + 2];
     if (isPunct(afterClose, '=>') || isPunct(afterClose, '{')) break; // parameter list / control flow
-    if (beforeOpen && beforeOpen.type === 'ident' && !REGEX_AFTER_KEYWORD.has(beforeOpen.value)) break; // call / catch / function / keyword head
+    if (beforeOpen && beforeOpen.type === 'ident' && !REGEX_AFTER_KEYWORD.has(beforeOpen.value)
+        && !statementHead && !jumpLabel) break; // call / catch / function / keyword head
     if (isPunct(beforeOpen, ']')) break; // call on a member; '*' is also multiplication
     if (isPunct(beforeOpen, ')') && beforeOpen.controlFlow !== true) break; // call on a call result
     lo -= 1;
