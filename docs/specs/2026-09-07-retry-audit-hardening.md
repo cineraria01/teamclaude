@@ -42,7 +42,8 @@ were treated as postfix updates. Fixes preserve heritage traversal, recognize
 the debugger statement boundary, and enforce the no-line-terminator rule for
 postfix updates. A subsequent review also required preserving statement-block
 classification after `debugger`; its regex rule is separate from expression
-keywords. Five regression cases increase the mutation set to 111.
+keywords. Bare and labelled `break`/`continue` statements also preserve regex
+boundaries after ASI. Nine regression cases increase the mutation set to 115.
 
 The source handoff reported 63 passing reset-credit tests and 106 mutation
 cases. Those results are historical and do not substitute for testing this

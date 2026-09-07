@@ -603,6 +603,10 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     return source.replace(needle, replacement);
   };
   const mutants = [
+    ...['break', 'continue', 'break cycle', 'continue cycle'].map(statement => [
+      `ASI jump preserves write: ${statement}`,
+      replaceOnce(helperCall, `cycle: do { if(false) ${statement}\n /\x60/.test(""); retryCount = 9; /\x60/.test(""); } while(false);`),
+    ]),
     ...['debugger\n /`/.test("");', 'debugger\n{} /`/.test("");', 'let x = 0; x\n++ /`/.lastIndex;'].map(prefix => [
       `ASI regex preserves write: ${prefix}`,
       replaceOnce(helperCall, prefix + ' retryCount = 9; /`/.test("");'),

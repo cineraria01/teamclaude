@@ -76,7 +76,9 @@ export function tokenizeJs(source) {
       throw new Error(`ambiguous "/" after "of" at line ${line} — wrap the operand in parentheses`);
     }
     if (prev && prev.type === 'ident' && property) return false; // `obj.return / 2` is a division
-    if (isIdent(prev, 'debugger')) return true;
+    if (isIdent(prev, 'debugger') || isIdent(prev, 'break') || isIdent(prev, 'continue')) return true;
+    if (isIdent(prev) && (isIdent(beforePrev, 'break') || isIdent(beforePrev, 'continue'))
+        && !isPunct(tokens[tokens.length - 3], '.') && !isPunct(tokens[tokens.length - 3], '?.')) return true;
     return !endsExpression(prev);
   };
   const parenKinds = []; // true when the `(` follows if/while/for/with
