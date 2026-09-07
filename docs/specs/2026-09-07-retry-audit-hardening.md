@@ -35,6 +35,13 @@ lexical/binding defects and their regression controls.
 
 ## Verification
 
+Independent review of the first integration candidate rejected three further
+causes: function-heritage member suffixes hid method bindings, `debugger`
+followed by ASI hid regex-adjacent writes, and line-separated prefix updates
+were treated as postfix updates. Fixes preserve heritage traversal, recognize
+the debugger statement boundary, and enforce the no-line-terminator rule for
+postfix updates. Four regression cases increase the mutation set to 110.
+
 The source handoff reported 63 passing reset-credit tests and 106 mutation
 cases. Those results are historical and do not substitute for testing this
 integration candidate. Current validation and gate status are recorded in the

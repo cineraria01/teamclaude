@@ -603,6 +603,10 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     return source.replace(needle, replacement);
   };
   const mutants = [
+    ...['debugger\n /`/.test("");', 'let x = 0; x\n++ /`/.lastIndex;'].map(prefix => [
+      `ASI regex preserves write: ${prefix}`,
+      replaceOnce(helperCall, prefix + ' retryCount = 9; /`/.test("");'),
+    ]),
     ['helper RHS arithmetic is not a zero reset', replaceOnce('retryCount = 0;', 'retryCount = 0 + 99;')],
     ['helper RHS logical expression is not a zero reset', replaceOnce('retryCount = 0;', 'retryCount = 0 || 99;')],
     ...[13, 8232, 8233].flatMap(code => [
@@ -613,6 +617,10 @@ test('structural guard self-test: the lexical audit catches the evasions text ma
     ['for await regex preserves call', replaceOnce(helperCall, 'for await (const x of [1]) /`/.test(""); ' + RECURSE.replace('upstream, retryCount', 'upstream, 9') + '; /`/.test("");')],
     ['anonymous function heritage preserves shadow binding', replaceOnce(helperCall, `class K extends function() {} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`)],
     ['named function heritage preserves shadow binding', replaceOnce(helperCall, `class K extends function Base() {} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`)],
+    ...['function Base() {}.constructor', 'function Base() {}.valueOf()'].map(heritage => [
+      `function heritage suffix preserves shadow binding: ${heritage}`,
+      replaceOnce(helperCall, `class K extends ${heritage} { if(retryCount) { return ${RECURSE}; } } return new K().if(99);`),
+    ]),
     ['parenthesised argument + retryCount + 2 restart (regex could not enumerate it)',
       replaceOnce(helperCall, 'return forwardRequest(req, res, String(body), accountManager, upstream, retryCount + 2, hooks, reqId, ctx, logDir);')],
     ['multi-line call with a non-allowlisted constant',

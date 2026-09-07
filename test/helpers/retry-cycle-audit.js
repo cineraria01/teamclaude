@@ -18,7 +18,7 @@
 // NOT reserved — a `/` after it is ambiguous and the tokenizer fails closed.
 const REGEX_AFTER_KEYWORD = new Set([
   'return', 'typeof', 'instanceof', 'in', 'new', 'delete', 'void',
-  'throw', 'case', 'do', 'else', 'yield', 'await',
+  'throw', 'case', 'do', 'else', 'yield', 'await', 'debugger',
 ]);
 const CONTROL_FLOW_PAREN = new Set(['if', 'while', 'for', 'with']);
 const PUNCTUATORS = [
@@ -218,8 +218,10 @@ export function tokenizeJs(source) {
       continue;
     }
     if (punct === '++' || punct === '--') {
+      const prev = tokens[tokens.length - 1];
       push('punct', punct, start);
-      tokens[tokens.length - 1].postfix = endsExpression(tokens[tokens.length - 2]);
+      tokens[tokens.length - 1].postfix = endsExpression(prev)
+        && ![...source.slice(prev.end, start)].some(isLineTerminator);
       continue;
     }
     push('punct', punct, start);
@@ -333,7 +335,7 @@ function isClassBodyOpener(tokens, match, k) {
     }
     if (isPunct(tokens[j - 1], '.') || isPunct(tokens[j - 1], '?.')) continue; // a keyword-named heritage property
     if (isIdent(token, 'class')) return true;
-    if (isIdent(token, 'function') && isIdent(tokens[j - 1], 'extends') && isPunct(tokens[k - 1], '}')) continue;
+    if (isIdent(token, 'function') && isIdent(tokens[j - 1], 'extends')) continue;
     if (isIdent(token, 'function') || isIdent(token, 'catch') || CONTROL_FLOW_PAREN.has(token.value)
         || token.value === 'switch' || token.value === 'else' || token.value === 'try' || token.value === 'finally' || token.value === 'do') return false;
   }
