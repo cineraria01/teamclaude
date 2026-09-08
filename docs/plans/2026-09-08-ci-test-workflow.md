@@ -8,11 +8,11 @@ acceptance_criteria:
   - id: AC1
     desc: "전체 Node 테스트 통과"
     verifier: "node --test --test-concurrency=1"
-    status: pending
+    status: passed
   - id: AC2
     desc: "모델 복구 evidence 검증 통과"
     verifier: "python3 -m unittest discover -s test -p test_model_recovery_gate.py -v"
-    status: pending
+    status: passed
 constraints:
   - "실패 테스트 삭제·약화 금지"
   - "운영 계정과 서비스 변경 금지"
@@ -28,8 +28,8 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 1. 완료: 인계 원문 사용자 의도, clean 워크트리, PR #34 OPEN, 최신 기본 브랜치 PR #33 통합 확인.
 2. 완료: 깨끗한 환경에서 CLI 실패와 느린 lsof·한글 경로 변환을 재현. Claude 추가 조사는 풀 제한으로 미검증.
 3. 완료: 날짜 로케일·lsof 조회 수정, SHA evidence 갱신, Actions workflow와 README 배지 연결.
-4. 진행 중: 변경분 정리 및 독립 CLI/API QA 28/28 통과. 전체 테스트와 공식 독립 검증을 진행한다.
-5. 진행 중: PR #34 갱신 후 Ubuntu Actions의 실패를 확인하고 환경 의존성을 보강한다. 전체 검증 후 기본 브랜치 반영·배지 관찰·인수인계를 완료한다.
+4. 완료: 변경분 정리, 독립 CLI/API QA 28/28, Ubuntu 전체 테스트 860/860 통과. 아래 실행별 근거와 로컬 검증 한계를 구분한다.
+5. 공개 반영: 공식 독립 검토와 로컬 전체 재실행을 마친 뒤 PR #34를 머지하고 기본 브랜치 Actions·배지를 관찰한다. 실제 머지·최종 실행 상태는 [PR #34](https://github.com/sangrokjung/teamclaude/pull/34)와 비공개 인수인계에 기록한다.
 
 ## Verification
 
@@ -79,6 +79,16 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - `b58c2cc` 독립 실제 QA: 한글 경로·`ko_KR.UTF-8`에서 28/28 PASS. 인증 HTTP readback, priority/disable/enable/remove·구독 cancel/clear, supervisor·worker PID 유지, 잘못된 입력 거부, 출력 자격증명 비노출을 확인했다. 임시 프로세스와 설정을 정리했다.
 - 같은 커밋의 로컬 전체 재실행은 복구 verifier 3/3·프록시 호환성 통과 후 load1 57.59로 qgate hard limit 48.0에 걸려 exit 75로 중단됐다. 재실행은 큐에 유지하며 전체 PASS로 기록하지 않는다.
 - GitHub push 실행 `34220789793` 및 PR 실행 `34220789838`: 둘 다 860 tests / 836 pass / 23 fail / 1 skipped. 23 fail은 wrapper 하위 19개와 부모 그룹 4개이며, 다른 파일의 실패는 없었다.
-- 실패는 wrapper 실행의 null 종료 상태 17건과 명시적인 spawn ENOENT 2건이다. 파일 생성·readback·실행 권한 테스트는 통과했다. wrapper와 fixture가 `/bin/zsh`를 요구하므로 CI에 zsh 설치와 실제 실행 확인을 추가했다. 누락 인터프리터가 있는 공백 경로 스크립트는 ENOENT, 유효 인터프리터는 exit 0인 것을 별도 재현했다. runner 설치 후 전체 재실행으로 가설을 검증한다.
+- 실패는 wrapper 실행의 null 종료 상태 17건과 명시적인 spawn ENOENT 2건이다. 파일 생성·readback·실행 권한 테스트는 통과했다. wrapper와 fixture가 `/bin/zsh`를 요구하므로 CI에 zsh 설치와 실제 실행 확인을 추가했다. 누락 인터프리터가 있는 공백 경로 스크립트는 ENOENT, 유효 인터프리터는 exit 0인 것을 별도 재현했다. 설치 후 두 원격 전체 실행이 모두 통과해 원인을 확인했다.
 - 한국어 locale을 생성하고 존재를 확인하여 기존 locale 테스트도 Ubuntu에서 실행한다. 테스트·assertion·실패 판정은 변경하지 않는다.
 - `sync-docs`: `CLAUDE.md` 198줄·기본 브랜치 대비 불변, 관련 rules 파일 없음. housekeeping 스크립트가 빈 파일 목록에서 숫자를 중복 출력해 JSON이 잘못됐으므로 PASS로 소비하지 않았다. `git ls-files --others --exclude-standard`로 미추적 파일 0개를 별도 확인했다.
+
+## 머지 전 확인한 결과
+
+- 검증 커밋: `4e786a6a8f5d970631377bb1a3b84e65bcce9c06`.
+- [push 실행 34221523291](https://github.com/sangrokjung/teamclaude/actions/runs/34221523291)과 [PR 실행 34221528150](https://github.com/sangrokjung/teamclaude/actions/runs/34221528150): 각각 `completed/success`, 860 tests / 860 pass / 0 fail / 0 cancelled / 0 skipped. `zsh 5.9`와 `ko_KR.UTF-8` 생성·확인 단계도 성공했다.
+- 두 실행 모두 pinned full recovery verifier 3/3 PASS. AC1·AC2의 passed는 이 Ubuntu 실행 결과이며, 로컬 운영 watchdog 설치본과의 일치를 뜻하지 않는다.
+- 이전 QA 커밋과 검증 커밋의 `src`, `test`, `package.json`은 동일하다. 독립 QA가 이 동일성과 앞선 28개 실제 CLI/API 결과를 대조하고, 검증 커밋에서 help 2건·잘못된 명령·오프라인 status의 종료 코드와 설정 불변을 추가 확인했다.
+- 코드 품질·보안·요구사항·맥락·실제 QA의 독립 검토 5개는 검증 커밋에서 PASS다. 이는 공식 gate receipt를 대신하지 않는다. 공개 반영에는 현재 generation의 공식 `goal-correctness`·`runtime-security` APPROVE가 별도로 필요하다.
+- 로컬 전체 재실행과 Node 복구 회귀를 포함한 공식 verifier는 qgate에 제출했다. 앞선 부하 안전 중단은 성공으로 집계하지 않는다. 서비스 관련 상속 환경을 제거하고 고정 기준선 watchdog 파일을 비교한다. 완료 결과는 PR과 비공개 인수인계에 남긴다.
+- Claude Code 추가 조사·구현 검증은 지정한 Fable 설정으로 실제 실행했으나 풀 제한 또는 시간 초과로 실질 결과를 얻지 못했다. UNVERIFIED이며 성공 검증으로 소비하지 않는다.
