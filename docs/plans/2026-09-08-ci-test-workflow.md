@@ -108,7 +108,7 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - [push CI 34227259843](https://github.com/sangrokjung/teamclaude/actions/runs/34227259843)와 [PR CI 34227263500](https://github.com/sangrokjung/teamclaude/actions/runs/34227263500)는 각각 860 tests / 860 pass / 0 fail / 0 cancelled / 0 skipped다. 두 실행 모두 전체 Node 스위트와 그 안의 pinned Python 복구 verifier를 실행했다.
 - 공식 macOS 격리 검증은 `/bin/ps` 실행 자체가 `Operation not permitted`로 차단된다. 같은 명령의 일반 실행은 exit 0이었다. 동일 격리 조건의 진단에서 lifecycle 정보가 없어 정상 stop·계정 hot reload 테스트가 실패하고 자식 서버가 남는 것을 확인했다. 제품 테스트·assertion·격리 정책을 변경하지 않았다.
 - 공식 verifier에는 기존 `test/gate_qa_status_cli.py`의 실제 CLI 테스트와 공개 소스 SHA·모의 watchdog 검증을 사용한다. 이는 위 전체 실행을 대체하지 않는다. 격리 환경에서 증명할 수 없는 프로세스 신원·종료 동작은 위 로컬 전체·실사용 QA와 두 Ubuntu 실행으로 확인했다.
-- 이 문서 갱신은 실행 코드·테스트·workflow를 변경하지 않는다. 아래 SHA-256은 두 원격 성공 실행의 커밋에서 직접 추출한 파일 바이트이며, 이후 문서 커밋의 검토자는 현재 번들 파일과 대조할 수 있다.
+- 제품 실행 코드·전체 테스트·workflow는 변경하지 않는다. 기존 gate CLI wrapper는 `test_model_recovery_gate.py`의 Node runtime resolver를 공유하여 제한된 PATH에서도 설치본을 찾게 한다. 기존 assertion은 유지한다. 아래 SHA-256은 두 원격 성공 실행의 커밋에서 직접 추출한 파일 바이트이며, 이후 문서 커밋의 검토자는 현재 번들 파일과 대조할 수 있다.
 
 | 파일 | 실행 커밋의 SHA-256 |
 |---|---|
@@ -121,3 +121,19 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 | `test/test_model_recovery_gate.py` | `dc8ac6009d16c39f05965f313e9cb059acc7200f963768e426f5041cc10ad257` |
 
 - Claude Code 추가 제품 소스 검증은 지정 Fable 모델에서 exit 0·is_error=false·APPROVE로 완료됐다. 별도 검증 도구 원인 조사는 시간 초과였고, 공식 receipt로 소비하지 않는다. 공식 승인과 기본 브랜치 배지 관찰은 별도 완료 조건이다.
+
+## 공식 검토의 리스너 소유권 반례 수정
+
+- generation 17의 두 공식 검토가 `lsof` 실패 시 state PID fallback이 신호 권한으로 이어지는 HIGH 반례를 지적했다. 기존 동작이지만 이번 계약의 리스너 소유권 필수 조건에 직접 해당한다.
+- 두 임시 서버의 state를 교차 조합하고 `lsof` 실패·빈 출력을 각각 재현한다. stop은 두 서버를 모두 보존해야 하며, 정상 state와 소유권 조회를 복구하면 지정 서버만 종료해야 한다.
+- 수정은 `lifecycleVerified`에 독립적으로 확인한 리스너 PID를 필수로 추가한다. 읽기 전용 상태 표시의 PID fallback과 기존 프로세스·nonce·worker 검사, 기존 assertion은 유지한다.
+- 위 f5 실행과 SHA 표는 이전 검증 기록이다. 이 보강 후 전체 실행과 현재 소스 해시는 새 실행 근거로 기록하고 독립 검토를 다시 수행한다.
+
+
+## 소유권 보강 후 현재 소스 검증
+
+- 전체 실행의 기계 생성 기록: [2026-09-08-ci-owner-execution.json](../evidence/2026-09-08-ci-owner-execution.json). 실행 전후 89개 실행 파일의 SHA-256이 동일하며 전체 출력의 해시와 마지막 집계를 기록했다. 공식 review receipt가 아니다.
+- 2026-09-08 22:36:59–22:41:30 KST, `npm test -- --test-concurrency=1`: exit 0, **861 tests / 861 pass / 0 fail / 0 cancelled / 0 skipped**. 운영 관련 상속 환경을 제거하고 watchdog은 고정 기준선 `0283918`과 비교했다.
+- 소유권 반례는 수정 전 잘못된 서버가 종료되어 실패했고, 수정 후 `lsof` exit 1 및 빈 출력 모두 두 서버가 살아 있음을 확인했다. 정상 소유권 복구 후 지정 서버만 종료됐다. 상태 표시·소유권 거부·reset-credit targeted 3/3, supervisor 파일 22/22, 실제 CLI·HTTP 28/28도 통과했다.
+- 앞선 전체 실행 두 번에서 reset-credit 테스트의 기동 대기가 5초에 실패했다. 자식 stdout/stderr를 읽고 실패 메시지에 PID·exit·signal을 추가한 뒤 전체 실행은 통과했다. 기존 timeout·assertion은 그대로다. 포트 충돌·조기 종료 등 정확한 원인은 미확정이며 간헐 실패가 해결됐다고 단정하지 않는다. 원격 전체 CI를 최종 커밋에서 다시 확인한다.
+- 정리 패스: 제품 변경은 읽기 전용 신원 표시와 신호 권한의 분리에 한정했다. 기존 신호 직전·worker 부모 검사와 assertion을 유지했다. 테스트 오류 관측 외 임시 trace는 제품에 포함하지 않았다. `CLAUDE.md`의 state/port/lsof 기반 lifecycle 설명은 현재 동작과 일치한다.

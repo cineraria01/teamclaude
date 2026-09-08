@@ -807,6 +807,63 @@ console.log(JSON.stringify({ ok: response.ok, accounts: body.accounts.length }))
   }
 });
 
+test('stop refuses a cross-wired state when listener ownership cannot be verified', { timeout: 20000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamclaude-owner-required-'));
+  const children = [];
+  const configs = [];
+  try {
+    for (const name of ['first', 'second']) {
+      const configPath = join(dir, `${name}.json`);
+      const port = await unusedPort();
+      await writeFile(configPath, JSON.stringify({
+        proxy: { port, apiKey: 'tc-test' },
+        upstream: 'http://127.0.0.1:9',
+        activeWarmup: false,
+        accounts: [{ name: 'api-test', type: 'apikey', apiKey: 'test-api-key' }],
+      }));
+      const env = { ...process.env, TEAMCLAUDE_PROVIDER: 'anthropic', TEAMCLAUDE_CONFIG: configPath };
+      delete env.TEAMCLAUDE_SESSION_SUPERVISED;
+      const child = spawn(process.execPath, [entry, 'server'], { env, stdio: 'ignore' });
+      children.push(child);
+      await waitUntil(() => status(port), `${name} proxy did not start`);
+      const statePath = join(dir, `${name}.server.json`);
+      const state = await waitUntil(() => readState(statePath), `${name} state was not written`);
+      configs.push({ env, state, statePath, port });
+    }
+    const [first, second] = configs;
+    await writeFile(second.statePath, JSON.stringify({
+      ...second.state,
+      pid: first.state.pid,
+      lifecycle: { ...second.state.lifecycle, supervisor: first.state.lifecycle.supervisor },
+    }));
+    const bin = join(dir, 'bin');
+    await mkdir(bin);
+    for (const exitCode of [1, 0]) {
+      await writeFile(join(bin, 'lsof'), `#!/bin/sh\nexit ${exitCode}\n`, { mode: 0o755 });
+      const rejected = spawnSync(process.execPath, [entry, 'stop'], {
+        env: { ...second.env, PATH: `${bin}:${process.env.PATH}` },
+        encoding: 'utf8', timeout: 10000,
+      });
+      assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+      assert.match(rejected.stderr, /lifecycle identity could not be verified/);
+      for (const { state, port } of configs) {
+        assert.equal(isPidAlive(state.pid), true, 'neither supervisor may receive a signal');
+        assert.ok(await status(port), 'both listeners must remain available');
+      }
+    }
+    await writeFile(second.statePath, JSON.stringify(second.state));
+    const stopped = spawnSync(process.execPath, [entry, 'stop'], {
+      env: second.env, encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+    assert.equal(isPidAlive(first.state.pid), true);
+    await waitUntil(() => !isPidAlive(second.state.pid), 'verified supervisor did not exit');
+  } finally {
+    for (const child of children) await stopChild(child);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('CLI remove reloads the live worker while preserving the public supervisor', { timeout: 15000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'teamclaude-live-remove-'));
   const configPath = join(dir, 'config.json');
@@ -1572,9 +1629,15 @@ test('supervisor fences the operator reset-credit route to loopback (codex mode)
     env: { ...process.env, TEAMCLAUDE_CONFIG: configPath, TEAMCLAUDE_PROVIDER: 'codex' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  child.stderr.on('data', chunk => { output += chunk; });
 
   try {
-    await waitUntil(() => status(port), 'proxy did not start');
+    await waitUntil(() => status(port), 'proxy did not start').catch(error => {
+      error.message += ` (pid ${child.pid}, exit ${child.exitCode}, signal ${child.signalCode})\n${output}`;
+      throw error;
+    });
     const remote = await request({
       host,
       port,
