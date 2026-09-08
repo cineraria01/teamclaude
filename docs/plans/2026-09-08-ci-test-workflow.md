@@ -143,3 +143,8 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - `d55a519`의 공식 보안 검토에서 `lsof`가 PID를 출력한 뒤 exit 1이면 잘못된 서버에 신호를 보내는 추가 반례를 발견했다. 실제 두 임시 서버로 재현하여 수정 전 실패를 확인했다.
 - 정상 종료(`status === 0`, error·signal 없음)와 단일 양의 safe integer 출력만 소유권 증거로 사용한다. 실패·빈 출력·PID 뒤 쓰레기·여러 PID는 거부한다. 기존 신호 직전 검사와 모든 assertion을 유지한다.
 - 수정 후 반례·live remove 2/2 및 실제 파서 경계 9/9 통과. 위 861/861 JSON은 이 보강 전의 역사적 실행 기록이며 최신 전체 실행과 Ubuntu CI 결과로 갱신한다. 공식 정확성 검토가 최신 Ubuntu 증거를 요구하므로 PR 브랜치에서 먼저 CI를 실행하며, 그 push 자체는 완료나 머지를 의미하지 않는다.
+
+## 동률 테스트의 시계 경계
+
+- `9f2e27b`에서 로컬 전체와 Ubuntu push 실행은 861/861 통과했으나 PR 실행은 `tie on reset time` fixture가 실패했다. 두 `setSession` 호출이 각각 시계를 읽어 1ms 차이가 생기면 실제로 동률이 아니었다.
+- 실제 테스트 본문과 제품 `AccountManager`를 1ms씩 진행하는 fixture 시계로 실행하여 같은 실패를 재현했다. 같은 `now`를 양쪽에 전달한 뒤 0·1·5·100ms 시계 간격에서 모두 통과했다. 기대 계정 assertion과 제품 선택 로직은 그대로다.
