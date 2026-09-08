@@ -101,3 +101,23 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - 순서: 강화한 테스트의 실패 확인 → lifecycle·실패 시작 정리 수정 → targeted test·실제 CLI 검증 → 전체 CI·공식 verifier·독립 검토 → PR 반영 및 기본 배지 관찰.
 - 강화한 자동 시작 테스트는 수정 전 0/1 FAIL, 수정 후 자동 시작 종료·실패 시작의 시간 제한·포트 이동 복구 3/3 PASS다. 정상 종료뿐 아니라 잘못된 시작 시각과 살아 있는 부모 PID를 기록하면 신호를 거부함을 확인했다. `sameProcessIdentity` 자체와 worker 부모 검사는 변경하지 않았다.
 - 정리 패스: 변경은 supervisor 비교 조건과 직접 생성한 daemon 정리에 한정했다. 공유 추상화 추가나 기존 assertion 삭제가 없다. 최신 변경을 포함한 전체 결과와 공식 판정은 PR·비공개 인수인계의 실행 기록으로 확인한다.
+
+## 최종 실행 근거와 격리 검증의 범위
+
+- 실행 커밋 `f5c42e32ef2d004190819a47a302fcbd5bc9d9f5`: 로컬 전체 860/860, 실제 CLI·HTTP 28/28, 실패 자동 시작 daemon의 직접 생성·SIGTERM 전달·PID 소멸을 확인했다. 정상 자동 시작 stop과 변조된 시작 시각·살아 있는 부모 PID의 거부도 통과했다.
+- [push CI 34227259843](https://github.com/sangrokjung/teamclaude/actions/runs/34227259843)와 [PR CI 34227263500](https://github.com/sangrokjung/teamclaude/actions/runs/34227263500)는 각각 860 tests / 860 pass / 0 fail / 0 cancelled / 0 skipped다. 두 실행 모두 전체 Node 스위트와 그 안의 pinned Python 복구 verifier를 실행했다.
+- 공식 macOS 격리 검증은 `/bin/ps` 실행 자체가 `Operation not permitted`로 차단된다. 같은 명령의 일반 실행은 exit 0이었다. 동일 격리 조건의 진단에서 lifecycle 정보가 없어 정상 stop·계정 hot reload 테스트가 실패하고 자식 서버가 남는 것을 확인했다. 제품 테스트·assertion·격리 정책을 변경하지 않았다.
+- 공식 verifier에는 기존 `test/gate_qa_status_cli.py`의 실제 CLI 테스트와 공개 소스 SHA·모의 watchdog 검증을 사용한다. 이는 위 전체 실행을 대체하지 않는다. 격리 환경에서 증명할 수 없는 프로세스 신원·종료 동작은 위 로컬 전체·실사용 QA와 두 Ubuntu 실행으로 확인했다.
+- 이 문서 갱신은 실행 코드·테스트·workflow를 변경하지 않는다. 아래 SHA-256은 두 원격 성공 실행의 커밋에서 직접 추출한 파일 바이트이며, 이후 문서 커밋의 검토자는 현재 번들 파일과 대조할 수 있다.
+
+| 파일 | 실행 커밋의 SHA-256 |
+|---|---|
+| `.github/workflows/tests.yml` | `ebfc95d5829505957e6c0c77b422cd9fa58efd0ee3260ee56f164e89ac8d1c0b` |
+| `src/index.js` | `f6a8329f618c11203f22a2568fc85e0481fa9ae5703387c9729fc4f72e862446` |
+| `src/cmux-process-guard.js` | `837229b97f7766f669b8eb7334ebb721a8a2ad899adbfe8b26f618cc90eb6559` |
+| `test/process-identity-locale.test.js` | `d727845f1f9e979593549e180207102b7c93a604859e050c2d9e06c1a3f0a8b6` |
+| `test/server-supervisor.test.js` | `21e24b19a58d1bbd19328179fbbda13c02b5be16244aac0feb54220e937fe9f5` |
+| `test/subscription-supervisor.test.js` | `ded85ee04a516143fe86c97f2cb9eb6aa2e67d5ab81a49aa99140f723c040fb3` |
+| `test/test_model_recovery_gate.py` | `dc8ac6009d16c39f05965f313e9cb059acc7200f963768e426f5041cc10ad257` |
+
+- Claude Code 추가 제품 소스 검증은 지정 Fable 모델에서 exit 0·is_error=false·APPROVE로 완료됐다. 별도 검증 도구 원인 조사는 시간 초과였고, 공식 receipt로 소비하지 않는다. 공식 승인과 기본 브랜치 배지 관찰은 별도 완료 조건이다.
