@@ -772,6 +772,30 @@ console.log(JSON.stringify({ ok: response.ok, accounts: body.accounts.length }))
     assert.equal(signal, null, stderr);
     assert.equal(exitCode, 0, stderr);
     assert.deepEqual(JSON.parse(stdout.trim()), { ok: true, accounts: 1 });
+    const statePath = join(dir, 'config.server.json');
+    const state = await readState(statePath);
+    assert.ok(state?.lifecycle?.supervisor);
+    for (const invalidIdentity of [
+      { ...state.lifecycle.supervisor, startedAt: 'invalid-start-time' },
+      { ...state.lifecycle.supervisor, ppid: process.pid },
+    ]) {
+      await writeFile(statePath, JSON.stringify({
+        ...state,
+        lifecycle: { ...state.lifecycle, supervisor: invalidIdentity },
+      }));
+      const rejected = spawnSync(process.execPath, [entry, 'stop'], {
+        encoding: 'utf8', env, timeout: 10000,
+      });
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.match(rejected.stderr, /lifecycle identity could not be verified/);
+      assert.equal(isPidAlive(state.pid), true);
+    }
+    await writeFile(statePath, JSON.stringify(state));
+    const stopped = spawnSync(process.execPath, [entry, 'stop'], {
+      encoding: 'utf8', env, timeout: 10000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+    await waitUntil(() => !isPidAlive(state.pid), 'auto-started supervisor did not exit');
   } finally {
     if (runChild) await stopChild(runChild);
     spawnSync(process.execPath, [entry, 'stop'], {

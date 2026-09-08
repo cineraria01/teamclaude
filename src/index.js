@@ -1741,7 +1741,15 @@ function verifyLifecycleState(state, ownerPid, port) {
     return { ok: false, reason: 'unverified-lifecycle' };
   }
   const supervisor = readProcessIdentity(state.pid);
-  if (!sameProcessIdentity(state.lifecycle.supervisor, supervisor)
+  const recordedSupervisor = state.lifecycle.supervisor;
+  const parentExited = supervisor?.ppid === 1
+    && Number.isInteger(recordedSupervisor?.ppid)
+    && recordedSupervisor.ppid > 1
+    && !isPidAlive(recordedSupervisor.ppid);
+  const recordedIdentity = parentExited
+    ? { ...recordedSupervisor, ppid: 1 }
+    : recordedSupervisor;
+  if (!sameProcessIdentity(recordedIdentity, supervisor)
       || !isExpectedServerIdentity(supervisor)) {
     return { ok: false, reason: 'unverified-lifecycle' };
   }
@@ -1908,6 +1916,7 @@ async function ensureProxyRunning(config, maxWaitMs = 15_000) {
     await delay(100);
   }
 
+  if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGTERM');
   const detail = launchError ? `: ${launchError.message}` : '';
   throw new Error(`Proxy failed to start${detail}. Run "teamcodex server" to inspect the startup error.`);
 }
