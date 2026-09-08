@@ -1680,13 +1680,15 @@ function readProcessIdentity(pid) {
     const result = spawnSync(
       'ps',
       ['-o', 'ppid=', '-o', 'lstart=', '-o', 'command=', '-p', String(pid)],
-      // LC_ALL=C is load-bearing: the match below assumes `lstart` is exactly the
-      // 24-character POSIX form ("Tue Sep  8 17:05:19 2026"). Under any other
-      // locale ps prints its own format — ko_KR gives "2026년  9월  8일 ..." —
-      // the regex misses, this returns null, and every caller silently loses
-      // process identity: `status` reports "lifecycle identity unverified" and
-      // the stop/restart path stops recognizing its own worker.
-      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } },
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LC_CTYPE: process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || 'C',
+          LC_ALL: '',
+          LC_TIME: 'C',
+        },
+      },
     );
     if (result.status !== 0 || !result.stdout?.trim()) return null;
     const line = result.stdout.trim();
@@ -1806,7 +1808,7 @@ function configuredStatusProbeTimeoutMs(fallbackMs = 1500) {
 function lsofPid(port) {
   if (process.platform === 'win32') return null;
   try {
-    const r = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+    const r = spawnSync('lsof', ['-b', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
     const pid = parseInt((r.stdout || '').trim().split('\n')[0], 10);
     return Number.isInteger(pid) ? pid : null;
   } catch { return null; }

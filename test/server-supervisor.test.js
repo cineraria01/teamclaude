@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { networkInterfaces, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
@@ -797,8 +797,32 @@ test('CLI remove reloads the live worker while preserving the public supervisor'
       { name: 'remove-me', type: 'apikey', apiKey: 'key-b' },
     ],
   }));
-  const env = { ...process.env, TEAMCLAUDE_CONFIG: configPath };
-  const child = spawn(process.execPath, [entry, 'server'], {
+  const localizedSource = join(dir, '한글');
+  await symlink(dirname(entry), localizedSource, 'dir');
+  const localizedEntry = join(localizedSource, 'index.js');
+  const bin = join(dir, 'bin');
+  await mkdir(bin);
+  const realLsof = spawnSync('which', ['lsof'], { encoding: 'utf8' }).stdout.trim();
+  assert.ok(realLsof, 'lsof is required to verify the listener owner');
+  await writeFile(join(bin, 'lsof'), `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const filesystemLookupDelayMs = args.includes('-b') ? 0 : 1700;
+setTimeout(() => {
+  const result = spawnSync(${JSON.stringify(realLsof)}, args, { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+}, filesystemLookupDelayMs);
+`, { mode: 0o755 });
+  const locales = spawnSync('locale', ['-a'], { encoding: 'utf8' }).stdout;
+  const utf8Locale = locales.split('\n').find(locale => /^ko_KR\.UTF-?8$/i.test(locale))
+    || locales.split('\n').find(locale => /UTF-?8/i.test(locale));
+  const env = {
+    ...process.env,
+    ...(utf8Locale ? { LC_ALL: utf8Locale } : {}),
+    TEAMCLAUDE_CONFIG: configPath,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
+  const child = spawn(process.execPath, [localizedEntry, 'server'], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -813,6 +837,7 @@ test('CLI remove reloads the live worker while preserving the public supervisor'
       timeout: 10_000,
     });
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Applied to the running server without restarting/);
 
     const reloaded = await waitUntil(async () => {
       const response = await fetch(`http://127.0.0.1:${port}/teamclaude/status`, {
