@@ -1680,7 +1680,13 @@ function readProcessIdentity(pid) {
     const result = spawnSync(
       'ps',
       ['-o', 'ppid=', '-o', 'lstart=', '-o', 'command=', '-p', String(pid)],
-      { encoding: 'utf8' },
+      // LC_ALL=C is load-bearing: the match below assumes `lstart` is exactly the
+      // 24-character POSIX form ("Tue Sep  8 17:05:19 2026"). Under any other
+      // locale ps prints its own format — ko_KR gives "2026년  9월  8일 ..." —
+      // the regex misses, this returns null, and every caller silently loses
+      // process identity: `status` reports "lifecycle identity unverified" and
+      // the stop/restart path stops recognizing its own worker.
+      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } },
     );
     if (result.status !== 0 || !result.stdout?.trim()) return null;
     const line = result.stdout.trim();

@@ -44,8 +44,13 @@ export async function inspectClaudeProcess(pid) {
       execFileAsync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
         timeout: 1500,
       }),
+      // LC_ALL=C for the same reason as readProcessIdentity in index.js: this
+      // value is fed to `new Date(...)` below, which only parses the POSIX form.
+      // A localized lstart ("2026년  9월  8일 ...") yields Invalid Date, so
+      // processStartedAt becomes NaN and every comparison against it is false.
       execFileAsync('ps', ['-p', String(pid), '-o', 'lstart='], {
         timeout: 1500,
+        env: { ...process.env, LC_ALL: 'C' },
       }),
     ]);
     const processCommand = command.trim();
