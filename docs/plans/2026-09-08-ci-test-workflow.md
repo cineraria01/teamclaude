@@ -137,3 +137,9 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - 소유권 반례는 수정 전 잘못된 서버가 종료되어 실패했고, 수정 후 `lsof` exit 1 및 빈 출력 모두 두 서버가 살아 있음을 확인했다. 정상 소유권 복구 후 지정 서버만 종료됐다. 상태 표시·소유권 거부·reset-credit targeted 3/3, supervisor 파일 22/22, 실제 CLI·HTTP 28/28도 통과했다.
 - 앞선 전체 실행 두 번에서 reset-credit 테스트의 기동 대기가 5초에 실패했다. 자식 stdout/stderr를 읽고 실패 메시지에 PID·exit·signal을 추가한 뒤 전체 실행은 통과했다. 기존 timeout·assertion은 그대로다. 포트 충돌·조기 종료 등 정확한 원인은 미확정이며 간헐 실패가 해결됐다고 단정하지 않는다. 원격 전체 CI를 최종 커밋에서 다시 확인한다.
 - 정리 패스: 제품 변경은 읽기 전용 신원 표시와 신호 권한의 분리에 한정했다. 기존 신호 직전·worker 부모 검사와 assertion을 유지했다. 테스트 오류 관측 외 임시 trace는 제품에 포함하지 않았다. `CLAUDE.md`의 state/port/lsof 기반 lifecycle 설명은 현재 동작과 일치한다.
+
+## lsof 종료 결과 보강
+
+- `d55a519`의 공식 보안 검토에서 `lsof`가 PID를 출력한 뒤 exit 1이면 잘못된 서버에 신호를 보내는 추가 반례를 발견했다. 실제 두 임시 서버로 재현하여 수정 전 실패를 확인했다.
+- 정상 종료(`status === 0`, error·signal 없음)와 단일 양의 safe integer 출력만 소유권 증거로 사용한다. 실패·빈 출력·PID 뒤 쓰레기·여러 PID는 거부한다. 기존 신호 직전 검사와 모든 assertion을 유지한다.
+- 수정 후 반례·live remove 2/2 및 실제 파서 경계 9/9 통과. 위 861/861 JSON은 이 보강 전의 역사적 실행 기록이며 최신 전체 실행과 Ubuntu CI 결과로 갱신한다. 공식 정확성 검토가 최신 Ubuntu 증거를 요구하므로 PR 브랜치에서 먼저 CI를 실행하며, 그 push 자체는 완료나 머지를 의미하지 않는다.

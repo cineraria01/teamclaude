@@ -838,8 +838,11 @@ test('stop refuses a cross-wired state when listener ownership cannot be verifie
     }));
     const bin = join(dir, 'bin');
     await mkdir(bin);
-    for (const exitCode of [1, 0]) {
-      await writeFile(join(bin, 'lsof'), `#!/bin/sh\nexit ${exitCode}\n`, { mode: 0o755 });
+    for (const [exitCode, output] of [
+      [1, ''], [0, ''], [1, String(first.state.pid)],
+      [0, `${first.state.pid}invalid`], [0, `${first.state.pid}\n${second.state.pid}`],
+    ]) {
+      await writeFile(join(bin, 'lsof'), `#!/bin/sh\nprintf '%s\\n' '${output}'\nexit ${exitCode}\n`, { mode: 0o755 });
       const rejected = spawnSync(process.execPath, [entry, 'stop'], {
         env: { ...second.env, PATH: `${bin}:${process.env.PATH}` },
         encoding: 'utf8', timeout: 10000,

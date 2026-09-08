@@ -1817,8 +1817,11 @@ function lsofPid(port) {
   if (process.platform === 'win32') return null;
   try {
     const r = spawnSync('lsof', ['-b', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
-    const pid = parseInt((r.stdout || '').trim().split('\n')[0], 10);
-    return Number.isInteger(pid) ? pid : null;
+    if (r.status !== 0 || r.error || r.signal) return null;
+    const output = (r.stdout || '').trim();
+    if (!/^[1-9]\d*$/.test(output)) return null;
+    const pid = Number(output);
+    return Number.isSafeInteger(pid) ? pid : null;
   } catch { return null; }
 }
 
