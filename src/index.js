@@ -1715,8 +1715,8 @@ function sameProcessIdentity(recorded, current) {
 
 function commandReferencesRuntime(command) {
   if (typeof command !== 'string') return false;
-  return command.split(/\s+/).some(token => {
-    const candidate = token.replace(/^['"]|['"]$/g, '');
+  return command.split(/\s+/).some(commandPart => {
+    const candidate = commandPart.replace(/^'|'$|^"|"$/g, '');
     try { return realpathSync(candidate) === RUNTIME_ENTRY_PATH; }
     catch { return candidate === process.argv[1] || candidate === RUNTIME_ENTRY_PATH; }
   });

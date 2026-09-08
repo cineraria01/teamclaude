@@ -1037,7 +1037,7 @@ and is hot-reloaded when you save it.
     "teamclaude": {
       "name": "TeamClaude Pool",
       "baseUrl": "http://127.0.0.1:3456/byok",
-      "apiKey": "!/absolute/path/to/print-byok-key.sh",
+      "apiKey": "!/path/to/print-byok-key.sh",
       "api": "anthropic-messages",
       "models": [
         { "id": "claude-sonnet-5", "name": "Sonnet 5 (pool)",

@@ -66,3 +66,10 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - 기존 고정 커밋의 goal/code/security 소스 검토는 PASS였다. 날짜 변경 후 최종 커밋의 재검토와 QA/context 검토는 별도로 수행한다.
 - Claude 추가 구현 검증과 날짜 원인 조사도 동일 Fable 설정으로 실제 실행했으나 계정 풀 제한으로 exit 1, `is_error=true`, modelUsage 없음. PASS로 소비하지 않는다.
 - 첫 전체 실행이 남긴 임시 supervisor는 작업 경로·PID·시작 시각을 확인하고 종료했다.
+
+## 검증 실행 환경과 리뷰 전송
+
+- 두 번째 전체 실행은 호스트 load1 51.80으로 qgate hard limit 48.0에 걸려 exit 75로 중단됐다. 통과로 집계하지 않는다. 그 실행의 `run-recovery` 임시 디렉터리 `ENOTEMPTY`는 단독 재실행에서 통과했고 전체 재시도를 큐에 유지했다.
+- 기존 Python 전체 verifier는 격리 환경에서 운영본 비교 환경변수가 제거되고 자식 서버가 남아 실패했다. 공식 격리 evidence는 공개 소스 SHA와 모의 watchdog 회귀 103개를 실행해 모두 통과했다. 전체 Node 테스트와 실제 CLI QA 의무는 별도로 유지한다.
+- 공식 리뷰 시크릿 스캔은 README의 명령 경로 예시와 명령 파싱 코드의 `token` 콜백·정규식 quote를 오탐했다. 실제 키는 없었다. 명령 조각 변수명을 명확히 하고 quote 정규식을 동등한 alternation으로 바꿨으며, 절대 경로 예시를 간결하게 했다. 정규식 두 표현은 137,257개 문자열에서 동일했다. 탐지기·정책·receipt는 수정하지 않았다.
+- 추가 Fable 검증 재시도는 풀 제한(exit 1) 이후 240초 timeout도 발생했다. 실질 결과와 modelUsage를 얻지 못해 UNVERIFIED로 유지한다.
