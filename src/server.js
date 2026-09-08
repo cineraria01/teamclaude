@@ -2804,7 +2804,15 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       : fetch(upstreamUrl, { ...requestOptions, redirect: 'manual' });
     ctx.preferredAccountUuid = null;
     const upstreamRes = await upstreamRequest;
-    const isStreaming = isEventStream(upstreamRes.headers.get('content-type'));
+    const contentType = upstreamRes.headers.get('content-type');
+    let isStreaming = isEventStream(contentType);
+    // The Codex backend can omit Content-Type on successful Responses SSE.
+    // Its explicit stream request still identifies that wire format.
+    if (!contentType && ctx.provider === 'codex' && req.method === 'POST'
+        && isCodexResponsesPath(req.url) && upstreamRes.status >= 200 && upstreamRes.status < 300) {
+      try { isStreaming = JSON.parse(body.toString()).stream === true; }
+      catch { /* Invalid request JSON does not establish a streaming response. */ }
+    }
     if (isStreaming && upstreamRes.status !== 429) upstreamDeadline.stopTimeout();
     // A response to a request dispatched BEFORE this account's reset credit
     // landed describes the pre-reset meter (e.g. a 429 that was already in
