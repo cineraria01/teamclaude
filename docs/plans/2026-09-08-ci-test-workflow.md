@@ -132,7 +132,7 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 
 ## 소유권 보강 후 현재 소스 검증
 
-- 전체 실행의 기계 생성 기록: [2026-09-08-ci-owner-execution.json](../evidence/2026-09-08-ci-owner-execution.json). 실행 전후 89개 실행 파일의 SHA-256이 동일하며 전체 출력의 해시와 마지막 집계를 기록했다. 공식 review receipt가 아니다.
+- 당시 실행은 실행 전후 89개 실행 파일의 SHA-256이 동일했다. 아래 최종 검증의 기계 생성 기록으로 최신 실행 결과를 확인한다. 공식 review receipt가 아니다.
 - 2026-09-08 22:36:59–22:41:30 KST, `npm test -- --test-concurrency=1`: exit 0, **861 tests / 861 pass / 0 fail / 0 cancelled / 0 skipped**. 운영 관련 상속 환경을 제거하고 watchdog은 고정 기준선 `0283918`과 비교했다.
 - 소유권 반례는 수정 전 잘못된 서버가 종료되어 실패했고, 수정 후 `lsof` exit 1 및 빈 출력 모두 두 서버가 살아 있음을 확인했다. 정상 소유권 복구 후 지정 서버만 종료됐다. 상태 표시·소유권 거부·reset-credit targeted 3/3, supervisor 파일 22/22, 실제 CLI·HTTP 28/28도 통과했다.
 - 앞선 전체 실행 두 번에서 reset-credit 테스트의 기동 대기가 5초에 실패했다. 자식 stdout/stderr를 읽고 실패 메시지에 PID·exit·signal을 추가한 뒤 전체 실행은 통과했다. 기존 timeout·assertion은 그대로다. 포트 충돌·조기 종료 등 정확한 원인은 미확정이며 간헐 실패가 해결됐다고 단정하지 않는다. 원격 전체 CI를 최종 커밋에서 다시 확인한다.
@@ -148,3 +148,13 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 
 - `9f2e27b`에서 로컬 전체와 Ubuntu push 실행은 861/861 통과했으나 PR 실행은 `tie on reset time` fixture가 실패했다. 두 `setSession` 호출이 각각 시계를 읽어 1ms 차이가 생기면 실제로 동률이 아니었다.
 - 실제 테스트 본문과 제품 `AccountManager`를 1ms씩 진행하는 fixture 시계로 실행하여 같은 실패를 재현했다. 같은 `now`를 양쪽에 전달한 뒤 0·1·5·100ms 시계 간격에서 모두 통과했다. 기대 계정 assertion과 제품 선택 로직은 그대로다.
+
+
+## 최종 소스와 실행 증거
+
+- 기계 생성 기록 [2026-09-08-ci-owner-execution.json](../evidence/2026-09-08-ci-owner-execution.json)은 최신 로컬 전체 실행, 실행 전후 동일한 소스 89개 해시, 전체 출력 해시, 아래 GitHub 실행의 API 상태·테스트 집계·도구 준비·로그 해시를 담는다. 원격 실행 커밋 `f630fcd00b1411db0a26d66dc0a32cf1d9311d66`의 파일 바이트도 같은 89개 해시와 일치한다.
+- 로컬 전체 실행: 861 tests / 861 pass / 0 fail / 0 cancelled / 0 skipped, 266561ms, exit 0. qgate의 대기 시간은 테스트 실행 시간과 구분한다.
+- Ubuntu [push 34238682137](https://github.com/sangrokjung/teamclaude/actions/runs/34238682137)와 [PR 34238687283](https://github.com/sangrokjung/teamclaude/actions/runs/34238687283)는 각각 success, 861/861, 실패·취소·스킵 0이다. zsh 5.9·한국어 locale 준비와 pinned full recovery verifier 3/3도 성공했다.
+- lsof 실패 출력 반례는 RED 후 정상 종료·단일 PID 검사로 GREEN, 동률 fixture는 1ms 시계에서 RED 후 공유 시각으로 4개 경계 GREEN이다. 기존 assertion·제품 선택 로직·worker 및 신호 직전 검사를 유지했다. Claude 추가 조사와 구현 검증은 지정 Fable 모델에서 실제 실행되어 exit 0·is_error=false·APPROVE로 확인했다. 공식 gate receipt와 구분한다.
+- 정리·문서 동기화: 추가 추상화나 임시 제품 계측이 없다. spec의 소유권 계약과 현재 구현이 일치한다. LSP는 응답 timeout 또는 설치되지 않은 서버로 결과를 얻지 못했으며, JS 문법·ESLint 9·actionlint·diff 검사로 별도 검증했다. reset-credit 기동 간헐 실패의 원인 미확정 기록은 유지한다.
+- 남은 공개 반영 결과(최종 문서 커밋의 CI, 공식 검토, PR 머지, 기본 브랜치 배지)는 PR #34와 비공개 인수인계에 실행 근거로 남긴다. 운영 계정·운영 프록시·npm 발행은 이 작업의 대상이 아니다.

@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "kind": "observed-execution-not-review-receipt",
-  "started_at": "2026-09-08T13:36:59.821039+00:00",
-  "finished_at": "2026-09-08T13:41:30.204807+00:00",
+  "started_at": "2026-09-08T14:36:52.832242+00:00",
+  "finished_at": "2026-09-08T14:41:19.600433+00:00",
   "command": [
     "npm",
     "test",
@@ -30,7 +30,7 @@
     "src/codex-session.js": "75a018693c5cc1991b8416b501efe3a27ab5414fa595aa006ed32b8a404e518c",
     "src/codex.js": "5611db95035ab14b04a6b1c0301d0b7a143079562b5c9f4230ddd88c16909993",
     "src/config.js": "dd982f9cdc909071ae37785d67862b753a99fbbee26da5c373998b2f3e703959",
-    "src/index.js": "c902c023ee84bf3184f11c2958b1e8a1834b2a9d0c9c1686928c7365db2bebd1",
+    "src/index.js": "ebc54ad0ea5ff4d60c372bd6bd151503d6dc113a19ad28ba419b380c8dae60b5",
     "src/oauth.js": "13fec146a55b0eb0e33e8598b65f39cacb59f87f4f9d9b4b4a1664283e3d419b",
     "src/reauth.js": "ae06fea9cbd1b81eab8a2bcd155b79d5358e32134eb420f55cf9d9587bcf418e",
     "src/server.js": "e3c492dd598ef38c174b977b042383f6c340e3ecd9a3bdca319bb415f18b3507",
@@ -40,7 +40,7 @@
     "src/teamclaude.js": "89259725a4345225ead1226f96f3a85fde6eb3d728c51962acb93ed1a69b54b9",
     "src/tui.js": "f65bd85ef50d5eefe0d22f658fed8c1d8a095a1852ce21afcc4c74e4b4d112c1",
     "src/worker-health.js": "126efe6a3c67e662db148421507768cc159d3f4b711e64487f8c9ce24b910fe8",
-    "test/account-manager.test.js": "27bd17f544c02a44fa648683c4ca72af6d5871335e42b8f53dc070007a70efb3",
+    "test/account-manager.test.js": "1d581c5f95d89c9594049010c3cf95a2f94b647557fda8dae0e9f29da7f78b46",
     "test/byok.test.js": "11c4acac6185f3e6934cf127d161edcb92bc27251631d7131e0c9718da371300",
     "test/claude-auth.test.js": "dbc2142239c451a97c0d1608eb6ff1d9b53c4bea94db0e4800e04ea02a14b1e2",
     "test/claude-recovery.test.js": "f077e8bc22118be523a91b3de3cf62991fae2a99201508b542419a517ce6a1d0",
@@ -85,7 +85,7 @@
     "test/server-state-ownership.test.js": "e2a00e370877e7ee3d9067e34bfe00d9d69960a843d513fb8ec6561e89b44f8d",
     "test/server-stream-usage-multibyte-no-content-type.test.js": "a2680faef70e1ce85208dbec083cd0ae27a9c479bd95a424f63657cc8cac9ac8",
     "test/server-stream-usage-multibyte.test.js": "b3969b14472a54fa429ad09941341c2fd29df6cf1a0a0d92e10b8155eabf86f7",
-    "test/server-supervisor.test.js": "a86e4d0268aa3a33c837e6c94c5bc28427a9969c82c7d5b43585cbb6b53d45f4",
+    "test/server-supervisor.test.js": "b4de3b25bfa50b46de58c159e7e1f3f03da117aad1c3862f9e54a965ab8c44cf",
     "test/server-usage-tokens.test.js": "5b1bc2562b473038ad5d74a608d4b58f70800ce4bad589c44c4b33b9da53ba7f",
     "test/server-usage-tracking.test.js": "39d71c7ba0c314db9373f20c160dff7e4c696ad98b004c5971a26eabc5c3fcab",
     "test/sse.test.js": "7aac986d2f7ac223bcdbb7a179148d81859edbfd8808525096a8039222d8709c",
@@ -103,18 +103,18 @@
     "test/tui.test.js": "6732555948e33996efb2127d0ebad463b0a0cf9357b8e939b12d3846f34f83ce",
     "test/warmup.test.js": "270617b2a932d19fa7e381ca9ead280daf5baeeaf8a63b2d4b80dde77facda9c"
   },
-  "full_output_sha256": "fc003f7d1e248a24c38908c9b63f7a1d8e044cee90f9c54c82c3c84e37463bc5",
+  "full_output_sha256": "a63c49c5d817c693970d6649eec0e23706d5aace43fc5b4c1a46b71513c5271e",
   "summary_lines": [
     "[TeamClaude] Warm-up probe failed for \"a1\": This operation was aborted",
-    "✔ an in-flight probe holds no client concurrency slot (client capacity undiminished) (18.4475ms)",
-    "✔ activeWarmup:false sends no probes (only client traffic reaches upstream) (154.362167ms)",
+    "✔ an in-flight probe holds no client concurrency slot (client capacity undiminished) (17.97475ms)",
+    "✔ activeWarmup:false sends no probes (only client traffic reaches upstream) (153.798ms)",
     "[TeamClaude] Warm-up measured account \"a0\"",
     "[TeamClaude] Warm-up measured account \"a1\"",
-    "✔ a restored probe template lets forced re-measure work before any traffic (post-restart R) (2.291083ms)",
+    "✔ a restored probe template lets forced re-measure work before any traffic (post-restart R) (1.76725ms)",
     "[TeamClaude] Warm-up measured account \"a1\"",
     "[TeamClaude] Warm-up measured account \"a0\"",
-    "✔ the first fresh commit replaces a restored template (fresh evidence wins) (5.490333ms)",
-    "✔ importProbeTemplate rejects garbage and never clobbers live evidence (0.371417ms)",
+    "✔ the first fresh commit replaces a restored template (fresh evidence wins) (2.674333ms)",
+    "✔ importProbeTemplate rejects garbage and never clobbers live evidence (0.2715ms)",
     "ℹ tests 861",
     "ℹ suites 0",
     "ℹ pass 861",
@@ -122,6 +122,70 @@
     "ℹ cancelled 0",
     "ℹ skipped 0",
     "ℹ todo 0",
-    "ℹ duration_ms 270129.363084"
-  ]
+    "ℹ duration_ms 266561.100583"
+  ],
+  "github_actions": {
+    "source_commit": "f630fcd00b1411db0a26d66dc0a32cf1d9311d66",
+    "source_sha256_matches_local": true,
+    "runs": [
+      {
+        "id": 34238682137,
+        "url": "https://github.com/sangrokjung/teamclaude/actions/runs/34238682137",
+        "event": "push",
+        "head_sha": "f630fcd00b1411db0a26d66dc0a32cf1d9311d66",
+        "status": "completed",
+        "conclusion": "success",
+        "test_summary": [
+          "ℹ tests 861",
+          "ℹ pass 861",
+          "ℹ fail 0",
+          "ℹ cancelled 0",
+          "ℹ skipped 0"
+        ],
+        "system_checks": [
+          {
+            "name": "Install test system dependencies",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check required system tools",
+            "conclusion": "success"
+          }
+        ],
+        "zsh_5_9_observed": true,
+        "korean_locale_generated": true,
+        "pinned_full_recovery": true,
+        "log_sha256": "7d9483a7d8491201cc2be05228edd554b688566ac499e8ef2f61dab49c0d4a0f"
+      },
+      {
+        "id": 34238687283,
+        "url": "https://github.com/sangrokjung/teamclaude/actions/runs/34238687283",
+        "event": "pull_request",
+        "head_sha": "f630fcd00b1411db0a26d66dc0a32cf1d9311d66",
+        "status": "completed",
+        "conclusion": "success",
+        "test_summary": [
+          "ℹ tests 861",
+          "ℹ pass 861",
+          "ℹ fail 0",
+          "ℹ cancelled 0",
+          "ℹ skipped 0"
+        ],
+        "system_checks": [
+          {
+            "name": "Install test system dependencies",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check required system tools",
+            "conclusion": "success"
+          }
+        ],
+        "zsh_5_9_observed": true,
+        "korean_locale_generated": true,
+        "pinned_full_recovery": true,
+        "log_sha256": "6451d1468503705c265de11d18554ccb7cf507e8b9c081bd931e91aa71e43624"
+      }
+    ]
+  }
 }
