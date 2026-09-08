@@ -28,8 +28,8 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 1. 완료: 인계 원문 사용자 의도, clean 워크트리, PR #34 OPEN, 최신 기본 브랜치 PR #33 통합 확인.
 2. 완료: 깨끗한 환경에서 CLI 실패와 느린 lsof·한글 경로 변환을 재현. Claude 추가 조사는 풀 제한으로 미검증.
 3. 완료: 날짜 로케일·lsof 조회 수정, SHA evidence 갱신, Actions workflow와 README 배지 연결.
-4. 진행 중: 변경분 정리 및 CLI/API QA 통과. 전체 테스트와 독립 검증을 진행한다.
-5. 대기: PR 갱신, GitHub Actions 실제 결과 확인, 허용 범위 내 공개 반영과 인수인계.
+4. 진행 중: 변경분 정리 및 독립 CLI/API QA 28/28 통과. 전체 테스트와 공식 독립 검증을 진행한다.
+5. 진행 중: PR #34 갱신 후 Ubuntu Actions의 실패를 확인하고 환경 의존성을 보강한다. 전체 검증 후 기본 브랜치 반영·배지 관찰·인수인계를 완료한다.
 
 ## Verification
 
@@ -73,3 +73,12 @@ Spec: docs/specs/2026-09-08-ci-test-workflow.md
 - 기존 Python 전체 verifier는 격리 환경에서 운영본 비교 환경변수가 제거되고 자식 서버가 남아 실패했다. 공식 격리 evidence는 공개 소스 SHA와 모의 watchdog 회귀 103개를 실행해 모두 통과했다. 전체 Node 테스트와 실제 CLI QA 의무는 별도로 유지한다.
 - 공식 리뷰 시크릿 스캔은 README의 명령 경로 예시와 명령 파싱 코드의 `token` 콜백·정규식 quote를 오탐했다. 실제 키는 없었다. 명령 조각 변수명을 명확히 하고 quote 정규식을 동등한 alternation으로 바꿨으며, 절대 경로 예시를 간결하게 했다. 정규식 두 표현은 137,257개 문자열에서 동일했다. 탐지기·정책·receipt는 수정하지 않았다.
 - 추가 Fable 검증 재시도는 풀 제한(exit 1) 이후 240초 timeout도 발생했다. 실질 결과와 modelUsage를 얻지 못해 UNVERIFIED로 유지한다.
+
+## Ubuntu CI 실행과 환경 보강
+
+- `b58c2cc` 독립 실제 QA: 한글 경로·`ko_KR.UTF-8`에서 28/28 PASS. 인증 HTTP readback, priority/disable/enable/remove·구독 cancel/clear, supervisor·worker PID 유지, 잘못된 입력 거부, 출력 자격증명 비노출을 확인했다. 임시 프로세스와 설정을 정리했다.
+- 같은 커밋의 로컬 전체 재실행은 복구 verifier 3/3·프록시 호환성 통과 후 load1 57.59로 qgate hard limit 48.0에 걸려 exit 75로 중단됐다. 재실행은 큐에 유지하며 전체 PASS로 기록하지 않는다.
+- GitHub push 실행 `34220789793` 및 PR 실행 `34220789838`: 둘 다 860 tests / 836 pass / 23 fail / 1 skipped. 23 fail은 wrapper 하위 19개와 부모 그룹 4개이며, 다른 파일의 실패는 없었다.
+- 실패는 wrapper 실행의 null 종료 상태 17건과 명시적인 spawn ENOENT 2건이다. 파일 생성·readback·실행 권한 테스트는 통과했다. wrapper와 fixture가 `/bin/zsh`를 요구하므로 CI에 zsh 설치와 실제 실행 확인을 추가했다. 누락 인터프리터가 있는 공백 경로 스크립트는 ENOENT, 유효 인터프리터는 exit 0인 것을 별도 재현했다. runner 설치 후 전체 재실행으로 가설을 검증한다.
+- 한국어 locale을 생성하고 존재를 확인하여 기존 locale 테스트도 Ubuntu에서 실행한다. 테스트·assertion·실패 판정은 변경하지 않는다.
+- `sync-docs`: `CLAUDE.md` 198줄·기본 브랜치 대비 불변, 관련 rules 파일 없음. housekeeping 스크립트가 빈 파일 목록에서 숫자를 중복 출력해 JSON이 잘못됐으므로 PASS로 소비하지 않았다. `git ls-files --others --exclude-standard`로 미추적 파일 0개를 별도 확인했다.

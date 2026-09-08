@@ -22,10 +22,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install test system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes zsh locales
+          sudo locale-gen ko_KR.UTF-8
       - name: Check required system tools
         run: |
           node --version
           python3 --version
           command -v lsof
+          test -x /bin/zsh
+          /bin/zsh --version
+          locale -a | grep -Eiq '^ko_KR\.utf-?8$'
       - name: Run all tests
         run: npm test -- --test-concurrency=1
