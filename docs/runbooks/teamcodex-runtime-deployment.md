@@ -287,3 +287,48 @@ log `deployed-manual`; rolls back on failure). Two gotchas learned that day:
 - Edit the live config with the artifact's own `src/config.js`
   `atomicConfigUpdate` (`TEAMCLAUDE_PROVIDER=codex`) so the write honours the
   same `<config>.lock` protocol as the running server's token refreshes.
+
+## Incident 2026-09-08 — stream ledger underflow (11 hours of "Working")
+
+**What happened.** A build that passed every existing test and a short-ASCII
+sidecar QA hung every Korean Codex response: `streamResponse`'s usage-parsing
+side buffer split events on *decoded text* while reserving *raw bytes*, so an
+upstream chunk ending inside a multi-byte character desynchronised the ledger,
+the next `\n\n` flush threw `Auxiliary response buffer reservation underflow`
+(also from the `finally`, before `res.end()`), and the client response was
+left open forever. The bug was latent since August; the deploy that routed
+Content-Type-less Codex SSE through the streaming path exposed it. Nothing
+alerted: `/teamclaude/status` stayed healthy (accounts usable, `inflight` 0)
+while `x-teamcodex-active-requests` piled up.
+
+**Rules that came out of it.**
+
+1. **Any change to `streamResponse` / SSE handling ships with a multi-byte,
+   chunk-split regression** (`test/server-stream-usage-multibyte*.test.js`).
+   Short ASCII fixtures never exercise the split; Korean output does on every
+   real response.
+2. **The rollout tools run `teamcodex-stream-canary.mjs` before materializing**
+   (`~/.claude/scripts/`, machine-local). It boots the candidate against a fake
+   upstream and streams a Korean event split mid-character and mid-boundary,
+   with and without Content-Type. A hang, underflow or truncated stream refuses
+   the rollout (`teamcodex-manual-rollout.py` → rc 4; the automatic deployer →
+   `canary-failed` state, no retry until the approval changes). `--skip-canary`
+   exists only for an emergency rollback to a build whose latent defect you
+   accept, and is logged.
+3. **Never edit the launchd plist by hand.** The 02:23 deploy did, so deployer
+   state, approval and last-good pointed at a different artifact than the one
+   running, and `teamcodex codex run` launched yet another. The account guard's
+   `RUNTIME_DRIFT` axis now alerts when the live source hash differs from the
+   deployer's `active_hash`.
+4. **The guard watches the failure shape, not just liveness.**
+   `HELD_NO_UPSTREAM` (requests held open while upstream inflight is 0 — a
+   wedged stream or a continuity stall) and `LEDGER_UNDERFLOW` (error-log
+   growth) alert within two ten-minute samples.
+
+**Diagnosis in one minute.** `curl -s -D - -o /dev/null
+http://127.0.0.1:3457/teamclaude/status | grep x-teamcodex` — active requests
+climbing while every account's `inflight` is 0 means responses are not being
+ended; then `grep -c 'reservation underflow' ~/.config/teamcodex.launchd.error.log`.
+Roll back with `teamcodex-manual-rollout.py <last-good artifact dir>`; if the
+wedged requests keep the drain fence from reaching zero, skip the fence only
+after confirming account `inflight` is 0 (nothing is being served upstream).
