@@ -72,8 +72,9 @@ test('explicit priority still beats weekly ordering', () => {
 test('tie on reset time → lowest utilization wins', () => {
   const am = new AccountManager(makeAccounts(2), 0.98);
   const reset = 60 * MIN;
-  setSession(am, 0, 0.40, reset);
-  setSession(am, 1, 0.20, reset);
+  const now = Date.now();
+  setSession(am, 0, 0.40, reset, now);
+  setSession(am, 1, 0.20, reset, now);
   assert.equal(am.getActiveAccount().name, 'acct-1');
 });
 

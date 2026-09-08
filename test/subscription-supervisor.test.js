@@ -61,6 +61,7 @@ async function stopChild(child) {
 }
 
 test('Codex subscription cancel and clear hot-reload without exposing credentials', { timeout: 15000 }, async () => {
+  const endsOn = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const dir = await mkdtemp(join(tmpdir(), 'teamcodex-live-subscription-'));
   const configPath = join(dir, 'teamcodex.json');
   const statePath = join(dir, 'teamcodex.server.json');
@@ -95,7 +96,7 @@ test('Codex subscription cancel and clear hot-reload without exposing credential
     await waitUntil(() => status(port), 'Codex proxy did not start');
     const initial = await waitUntil(() => readState(statePath), 'server state was not written');
     const cancel = spawnSync(process.execPath, [
-      entry, 'codex', 'subscription', 'cancel', 'live-codex', '--ends-on', '2026-09-06',
+      entry, 'codex', 'subscription', 'cancel', 'live-codex', '--ends-on', endsOn,
       '--account-uuid', 'live-codex-uuid',
     ], { encoding: 'utf8', env, timeout: 10_000 });
     assert.equal(cancel.status, 0, cancel.stderr);
@@ -107,7 +108,7 @@ test('Codex subscription cancel and clear hot-reload without exposing credential
       return payload.accounts[0]?.subscription?.state === 'cancellation-scheduled'
         ? payload : null;
     }, 'live worker did not apply subscription cancellation');
-    assert.equal(tracked.accounts[0].subscription.endsAt, '2026-09-06T15:00:00.000Z');
+    assert.equal(tracked.accounts[0].subscription.endsAt, `${endsOn}T15:00:00.000Z`);
     assert.equal((await readState(statePath)).workerPid, initial.workerPid);
     const publicJson = JSON.stringify(tracked);
     assert.doesNotMatch(publicJson, /test-access-token|test-refresh-token|test-id-value/);

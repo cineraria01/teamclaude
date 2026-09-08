@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-844-58e3a2?style=flat-square" alt="844 tests">
+  <a href="https://github.com/sangrokjung/teamclaude/actions/workflows/tests.yml"><img src="https://github.com/sangrokjung/teamclaude/actions/workflows/tests.yml/badge.svg?branch=qjc%2Fresilient-routing" alt="Tests"></a>
   <img src="https://img.shields.io/badge/runtime-Node.js%2018%2B-56d8ff?style=flat-square" alt="Node.js 18+">
   <img src="https://img.shields.io/badge/dependencies-zero-8d6cff?style=flat-square" alt="Zero runtime dependencies">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-ec6c9c?style=flat-square" alt="MIT License"></a>
@@ -1037,7 +1037,7 @@ and is hot-reloaded when you save it.
     "teamclaude": {
       "name": "TeamClaude Pool",
       "baseUrl": "http://127.0.0.1:3456/byok",
-      "apiKey": "!/absolute/path/to/print-byok-key.sh",
+      "apiKey": "!/path/to/print-byok-key.sh",
       "api": "anthropic-messages",
       "models": [
         { "id": "claude-sonnet-5", "name": "Sonnet 5 (pool)",

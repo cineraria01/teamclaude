@@ -46,6 +46,7 @@ export async function inspectClaudeProcess(pid) {
       }),
       execFileAsync('ps', ['-p', String(pid), '-o', 'lstart='], {
         timeout: 1500,
+        env: { ...process.env, LC_ALL: '', LC_TIME: 'C' },
       }),
     ]);
     const processCommand = command.trim();

@@ -15,13 +15,15 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from test_model_recovery_gate import NODE
+
 ROOT = Path(__file__).resolve().parent.parent
 NODE_TEST_TIMEOUT_S = 600  # the full node suite runs in ~13s; leave slack for a loaded host
 
 
 def run_node_test(*targets):
     return subprocess.run(
-        ["node", "--test", *targets],
+        [str(NODE), "--test", *targets],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -38,6 +40,7 @@ class StatusCliRegression(unittest.TestCase):
     """The regression this change fixes: `status` must survive an error account."""
 
     def test_status_cli_regression_tests_pass(self):
+        self.assertIsNotNone(NODE, "Node.js runtime not available")
         result = run_node_test("test/status-cli.test.js")
         self.assertEqual(result.returncode, 0, tail(result))
         # No exact pass-count: the suite legitimately grows (an exact "pass 2"

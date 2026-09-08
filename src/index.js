@@ -1680,7 +1680,15 @@ function readProcessIdentity(pid) {
     const result = spawnSync(
       'ps',
       ['-o', 'ppid=', '-o', 'lstart=', '-o', 'command=', '-p', String(pid)],
-      { encoding: 'utf8' },
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LC_CTYPE: process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || 'C',
+          LC_ALL: '',
+          LC_TIME: 'C',
+        },
+      },
     );
     if (result.status !== 0 || !result.stdout?.trim()) return null;
     const line = result.stdout.trim();
@@ -1707,8 +1715,8 @@ function sameProcessIdentity(recorded, current) {
 
 function commandReferencesRuntime(command) {
   if (typeof command !== 'string') return false;
-  return command.split(/\s+/).some(token => {
-    const candidate = token.replace(/^['"]|['"]$/g, '');
+  return command.split(/\s+/).some(commandPart => {
+    const candidate = commandPart.replace(/^'|'$|^"|"$/g, '');
     try { return realpathSync(candidate) === RUNTIME_ENTRY_PATH; }
     catch { return candidate === process.argv[1] || candidate === RUNTIME_ENTRY_PATH; }
   });
@@ -1733,7 +1741,15 @@ function verifyLifecycleState(state, ownerPid, port) {
     return { ok: false, reason: 'unverified-lifecycle' };
   }
   const supervisor = readProcessIdentity(state.pid);
-  if (!sameProcessIdentity(state.lifecycle.supervisor, supervisor)
+  const recordedSupervisor = state.lifecycle.supervisor;
+  const parentExited = supervisor?.ppid === 1
+    && Number.isInteger(recordedSupervisor?.ppid)
+    && recordedSupervisor.ppid > 1
+    && !isPidAlive(recordedSupervisor.ppid);
+  const recordedIdentity = parentExited
+    ? { ...recordedSupervisor, ppid: 1 }
+    : recordedSupervisor;
+  if (!sameProcessIdentity(recordedIdentity, supervisor)
       || !isExpectedServerIdentity(supervisor)) {
     return { ok: false, reason: 'unverified-lifecycle' };
   }
@@ -1800,9 +1816,12 @@ function configuredStatusProbeTimeoutMs(fallbackMs = 1500) {
 function lsofPid(port) {
   if (process.platform === 'win32') return null;
   try {
-    const r = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
-    const pid = parseInt((r.stdout || '').trim().split('\n')[0], 10);
-    return Number.isInteger(pid) ? pid : null;
+    const r = spawnSync('lsof', ['-b', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+    if (r.status !== 0 || r.error || r.signal) return null;
+    const output = (r.stdout || '').trim();
+    if (!/^[1-9]\d*$/.test(output)) return null;
+    const pid = Number(output);
+    return Number.isSafeInteger(pid) ? pid : null;
   } catch { return null; }
 }
 
@@ -1813,8 +1832,9 @@ function lsofPid(port) {
  * died and the OS recycled it for an unrelated process) or hand-written; trusting
  * it would let `stop` signal the wrong pid. So: confirm a TeamClaude-shaped server
  * answers on the port, then resolve the owner via `lsof`. The state file is only a
- * fallback for the pid when lsof can't determine it (and only if it's alive and
- * for this same port). Returns { pid, port } (pid may be null if undeterminable),
+ * fallback for read-only status when lsof can't determine it (and only if it's
+ * alive and for this same port); signals still require verified ownership.
+ * Returns { pid, port } (pid may be null if undeterminable),
  * or null when nothing is listening.
  */
 async function findRunningServer(
@@ -1848,19 +1868,22 @@ async function findRunningServer(
     if (!ownerPid) return { pid: null, port, lifecycleVerified: false, reason: 'no-pid' };
     const verified = verifyLifecycleState(state, ownerPid, port);
     const lifecycleRemainingMs = probeDeadline - Date.now();
-    const lifecycleMatches = verified.ok && lifecycleRemainingMs > 0
+    const stateIdentityVerified = verified.ok && lifecycleRemainingMs > 0
       && await probeServer(
         port,
         Math.min(configuredStatusProbeTimeoutMs(), lifecycleRemainingMs),
         state.lifecycle.id,
         config?.proxy?.apiKey,
       );
+    // State identity supports status; signals additionally require socket ownership.
+    const lifecycleVerified = lsofOwnerPid > 0 && stateIdentityVerified;
     return {
       pid: ownerPid,
       port,
-      lifecycleVerified: lifecycleMatches,
-      identity: lifecycleMatches ? verified.supervisor : null,
-      reason: lifecycleMatches ? null : 'unverified-lifecycle',
+      stateIdentityVerified,
+      lifecycleVerified,
+      identity: lifecycleVerified ? verified.supervisor : null,
+      reason: lifecycleVerified ? null : 'unverified-lifecycle',
     };
   }
 
@@ -1900,6 +1923,7 @@ async function ensureProxyRunning(config, maxWaitMs = 15_000) {
     await delay(100);
   }
 
+  if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGTERM');
   const detail = launchError ? `: ${launchError.message}` : '';
   throw new Error(`Proxy failed to start${detail}. Run "teamcodex server" to inspect the startup error.`);
 }
@@ -2842,7 +2866,7 @@ async function statusCommand() {
     });
     const data = await res.json();
 
-    const identity = running.lifecycleVerified
+    const identity = running.stateIdentityVerified
       ? `${running.pid ? `pid ${running.pid}, ` : ''}port ${running.port}`
       : `lifecycle identity unverified, port ${running.port}`;
     console.log(`Server:         running (${identity})`);
