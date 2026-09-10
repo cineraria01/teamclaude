@@ -54,6 +54,9 @@ const HOP_BY_HOP_HEADERS = new Set([
   'proxy-authorization', 'proxy-authenticate',
 ]);
 const CODEX_ERROR_INSPECTION_MAX_BYTES = 16 * 1024;
+// [local patch: client-credential paths] see the relayRaw branch in the request
+// handler. Anthropic mode only.
+const CLIENT_CREDENTIAL_PATHS = ['/v1/code/', '/api/oauth/files/', '/api/oauth/file_upload', '/api/oauth/validate'];
 
 function connectionHeaderNames(value) {
   return new Set(
@@ -1571,6 +1574,29 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         // or rewriting client refreshes would cause token rotation conflicts.
         if (provider === 'anthropic'
             && req.method === 'POST' && req.url === '/v1/oauth/token') {
+          await relayRaw(
+            req,
+            res,
+            upstream,
+            body,
+            maxResponseBytes,
+            upstreamResponseTimeoutMs,
+            reserveResponseBytes,
+            releaseReservedResponseBytes,
+          );
+          return; // outer finally decrements inFlightProxied
+        }
+
+        // [local patch: client-credential paths] Requests bound to the client's
+        // OWN claude.ai identity must not be rewritten to a rotated account token:
+        // /api/oauth/validate (Claude Code >=2.1.259 compares the token's
+        // account_uuid with ~/.claude.json before the Chrome extension connects —
+        // a rotated token yields "OAuth token belongs to a different claude.ai
+        // account"), Remote Control (/v1/code/*) and attachment transfers
+        // (/api/oauth/files/*, /api/oauth/file_upload). Relayed raw so a 401 here
+        // never triggers the account-level refresh/error path either.
+        if (provider === 'anthropic'
+            && CLIENT_CREDENTIAL_PATHS.some(p => (req.url || '').startsWith(p))) {
           await relayRaw(
             req,
             res,
