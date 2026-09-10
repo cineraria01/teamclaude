@@ -395,7 +395,7 @@ export class TUI {
 
   // Select mode is now the DELETE confirmation only — switch / enable-disable /
   // order act directly on the normal-mode ↑/↓ cursor. Here ↑/↓ let you re-pick
-  // before confirming; Enter deletes the selected account, Esc cancels.
+  // before confirming; Enter opens an exact-name confirmation, Esc cancels.
   _keySelect(k) {
     if (k === 'up' || k === 'k') this._moveSel(-1);
     else if (k === 'down' || k === 'j') this._moveSel(+1);
@@ -404,8 +404,18 @@ export class TUI {
       // action time (reindex-safe, and immune to a display reorder that happened
       // after the cursor was placed).
       const acct = this._selected();
-      if (acct) this._doRemove(this.am.accounts.indexOf(acct));
-      this.mode = 'normal';
+      if (!acct) { this.mode = 'normal'; return; }
+      const name = acct.name;
+      this.mode = 'input';
+      this.inputPrompt = `Type DELETE ${name} to remove account`;
+      this.inputBuf = '';
+      this.inputCb = value => {
+        if (value === `DELETE ${name}` && acct.name === name && this.am.accounts.includes(acct)) {
+          this._doRemove(this.am.accounts.indexOf(acct));
+        } else {
+          this._addLog('Account deletion cancelled: confirmation did not match.');
+        }
+      };
     }
     else if (k === 'esc' || k === 'q') { this.mode = 'normal'; }
   }
@@ -1063,7 +1073,7 @@ export class TUI {
         return ` ${dim('↑↓')} select  ${bold('s')}witch  ${bold('e')}toggle  ${bold('o')}rder  ${bold('d')}elete${reauth}  ${bold('a')}dd  ${bold('R')}eload  ${bold('q')}uit`;
       }
       case 'select':
-        return ` ${dim('↑↓')} select  ${bold('Enter')} delete  ${bold('Esc')} cancel`;
+        return ` ${dim('↑↓')} select  ${bold('Enter')} review deletion  ${bold('Esc')} cancel`;
       case 'order':
         return ` ${dim('↑↓')} move (up = preferred)  ${bold('a')}uto-all (reset order, weekly-reset)  ${bold('c')}lear rank  ${bold('Enter')}/${bold('Esc')} done`;
       case 'add':

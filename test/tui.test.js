@@ -276,7 +276,9 @@ test('a live display reorder cannot retarget a pending delete (cursor anchors th
   am.accounts[1].quota.unified7dReset = now + 3600_000;
   assert.equal(tui._displayList()[0].name, 'a1', 'display order flipped under the cursor');
 
-  tui._keySelect('enter');             // confirm — must delete the ANCHORED a0, not display[0]
+  tui._keySelect('enter');
+  tui.inputBuf = 'DELETE a0';
+  tui._keyInput('enter');             // confirm the anchored account by name
   assert.deepEqual(am.accounts.map(a => a.name), ['a1'], 'the anchored account was deleted, not its neighbor');
   assert.deepEqual(config.accounts.map(a => a.name), ['a1']);
 });
@@ -423,3 +425,17 @@ test('TUI "e" toggle disables/enables the selected account and persists it', asy
   assert.equal(am.accounts[0].enabled, true, 'toggled back on');
   assert.equal(config.accounts[0].enabled, true);
 });
+
+for (const input of ['', 'd', 'DELETE a0', 'DELETE a1']) {
+  test(`delete requires exact account-name confirmation: ${JSON.stringify(input)}`, () => {
+    const { tui, am } = makeTUI(['a0', 'a1']);
+    tui.selIdx = 1;
+    tui._keyNormal('d');
+    tui._keySelect('enter');
+    assert.equal(am.accounts.length, 2);
+    assert.equal(tui.mode, 'input');
+    tui.inputBuf = input;
+    tui._keyInput('enter');
+    assert.deepEqual(am.accounts.map(a => a.name), input === 'DELETE a1' ? ['a0'] : ['a0', 'a1']);
+  });
+}

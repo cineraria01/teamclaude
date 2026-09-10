@@ -1248,3 +1248,5 @@ allows keepalives and empty `response.created` / `response.in_progress` events.
 Once output begins, or for generic 5xx, malformed/oversized prefixes, compressed
 streams, and ambiguous disconnects, the proxy preserves existing passthrough
 behavior. Account quota, credentials, and future requests are not changed.
+
+Account deletion in the TUI requires typing `DELETE <account-name>` after selecting the account; Enter alone cannot delete an account.
