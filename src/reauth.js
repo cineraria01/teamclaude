@@ -1,3 +1,5 @@
+import { revokeCodexRefreshToken } from './codex.js';
+
 function matchingTargetIndexes(accounts, name, expectedAccountUuid) {
   if (expectedAccountUuid) {
     return accounts.map((account, index) => ({ account, index }))
@@ -242,6 +244,20 @@ export function reauthenticateTuiAccount(tui, account) {
         throw new Error('re-authenticated account was not persisted');
       }
       tui._addLog(`Re-authenticated "${account.name}" successfully`);
+      // [local patch: revoke-on-replace] drop the superseded grant upstream so
+      // the old session does not linger on chatgpt.com (best-effort).
+      const reauthProvider = account.provider || tui.config.provider || 'anthropic';
+      if (reauthProvider === 'codex' && previousLive.refreshToken
+          && previousLive.refreshToken !== credentials.refreshToken) {
+        try {
+          const revoked = await revokeCodexRefreshToken(previousLive.refreshToken);
+          tui._addLog(revoked.ok
+            ? `Revoked the previous Codex session for "${account.name}"`
+            : `Could not revoke the previous Codex session for "${account.name}" (HTTP ${revoked.status})`);
+        } catch (err) {
+          tui._addLog(`Could not revoke the previous Codex session for "${account.name}": ${err.message}`);
+        }
+      }
     } catch (e) {
       account.credential = previousLive.credential;
       account.refreshToken = previousLive.refreshToken;

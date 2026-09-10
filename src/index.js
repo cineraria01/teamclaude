@@ -20,6 +20,7 @@ import {
   parseCodexCredentialsJson,
   refreshCodexAccessToken,
   resolveCodexCliBin,
+  revokeCodexRefreshToken,
 } from './codex.js';
 import {
   currentCmuxCodexBaseline,
@@ -2258,8 +2259,16 @@ async function reauthenticateCommand() {
 
   console.log(`Starting OAuth re-authentication for "${name}"...`);
   let result;
+  let replaced = null; // [local patch: revoke-on-replace]
   try {
-    const provider = isCodexMode(await loadConfig()) ? 'codex' : null;
+    const beforeConfig = await loadConfig();
+    const provider = isCodexMode(beforeConfig) ? 'codex' : null;
+    if (provider === 'codex') {
+      const before = beforeConfig.accounts.find(account => (expectedAccountUuid
+        ? account.accountUuid === expectedAccountUuid
+        : account.name === name));
+      if (before) replaced = { ...before, provider: 'codex' };
+    }
     result = await reauthenticateAccount({
       name,
       expectedAccountUuid,
@@ -2278,6 +2287,7 @@ async function reauthenticateCommand() {
   console.log(`Re-authenticated account "${result.updated.name}"`);
   console.log(`Saved to ${getConfigPath()}`);
   await noteRunningServerReload(result.savedConfig);
+  await revokeReplacedCodexToken(replaced, result.updated, name);
 }
 
 async function codexSubscriptionCommand() {
@@ -3217,15 +3227,18 @@ async function removeCommand() {
   }
 
   let found = false;
+  let removed = null; // [local patch: revoke-on-replace]
   const config = await atomicConfigUpdate(cfg => {
     const idx = cfg.accounts.findIndex(a => a.name === name);
     if (idx < 0) return;
+    removed = { ...cfg.accounts[idx], provider: cfg.accounts[idx].provider || cfg.provider };
     cfg.accounts.splice(idx, 1);
     found = true;
   });
   if (!found) { console.error(`Account "${name}" not found`); process.exit(1); }
   console.log(`Removed account "${name}"`);
   await noteRunningServerReload(config);
+  await revokeReplacedCodexToken(removed, null, name);
 }
 
 // ── enable / disable / priority ─────────────────────────────
@@ -3494,9 +3507,36 @@ async function upsertOAuthAccount(name, creds, source = 'unknown') {
   await noteRunningServerReload(savedConfig);
 }
 
+/**
+ * [local patch: revoke-on-replace] After a Codex account's grant has been
+ * replaced (login/import/reauth) or dropped (remove), revoke the PREVIOUS refresh
+ * token upstream so the old session disappears from chatgpt.com instead of
+ * accumulating. Runs after the running server has synced the new grant, so no
+ * in-flight request still depends on the token being revoked. Best-effort: a
+ * failure is reported, never fatal (mirrors `codex logout`).
+ */
+async function revokeReplacedCodexToken(previous, next, label) {
+  const token = previous?.refreshToken;
+  if (!token || previous.provider !== 'codex') return;
+  if (next?.refreshToken && next.refreshToken === token) return;
+  try {
+    const result = await revokeCodexRefreshToken(token);
+    if (result.ok) {
+      console.log(`Revoked the previous Codex session for "${label}"`);
+    } else if (!result.skipped) {
+      console.error(`Could not revoke the previous Codex session for "${label}" `
+        + `(HTTP ${result.status}${result.message ? `: ${result.message}` : ''}) — `
+        + 'it stays listed on chatgpt.com until it expires');
+    }
+  } catch (err) {
+    console.error(`Could not revoke the previous Codex session for "${label}": ${err.message}`);
+  }
+}
+
 async function upsertCodexAccount(name, creds, source = 'unknown') {
   if (!name) name = creds.email;
   let action = 'Added';
+  let replaced = null; // [local patch: revoke-on-replace]
   const savedConfig = await atomicConfigUpdate(cfg => {
     if (!name) {
       let n = 1;
@@ -3520,6 +3560,9 @@ async function upsertCodexAccount(name, creds, source = 'unknown') {
       a.accountUuid === creds.accountId || a.accountId === creds.accountId);
     if (idx < 0) idx = cfg.accounts.findIndex(a => a.name === name);
     if (idx >= 0) {
+      replaced = { ...cfg.accounts[idx], provider: cfg.accounts[idx].provider || cfg.provider || 'codex' };
+    }
+    if (idx >= 0) {
       action = 'Updated';
       const previous = cfg.accounts[idx];
       if (previous.enabled !== undefined) account.enabled = previous.enabled;
@@ -3537,6 +3580,7 @@ async function upsertCodexAccount(name, creds, source = 'unknown') {
   console.log(`${action} Codex account "${name}"`);
   console.log(`Saved to ${getConfigPath()}`);
   await noteRunningServerReload(savedConfig);
+  await revokeReplacedCodexToken(replaced, creds, name);
 }
 
 // ── config sync helpers ─────────────────────────────────────

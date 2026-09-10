@@ -9,6 +9,13 @@ const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OPENAI_AUTH_CLAIM = 'https://api.openai.com/auth';
 const OPENAI_PROFILE_CLAIM = 'https://api.openai.com/profile';
 const TOKEN_REFRESH_TIMEOUT_MS = 30_000;
+// Server-side revocation endpoint used by `codex logout` and by `codex login`
+// before it re-authenticates (codex-rs login/src/auth/revoke.rs). TeamCodex logs
+// in from a throwaway CODEX_HOME, so the CLI's own "revoke before login" never
+// sees the pool's previous grant — without this, every re-login leaves one more
+// live session on chatgpt.com.
+const CODEX_REVOKE_ENDPOINT = 'https://auth.openai.com/oauth/revoke';
+const TOKEN_REVOKE_TIMEOUT_MS = 10_000;
 const UNSAFE_CODEX_RESUME_OPTIONS = new Set([
   '--local-provider',
   '--oss',
@@ -129,6 +136,43 @@ export async function refreshCodexAccessToken(
       ? exp * 1000
       : Date.now() + (Number(data.expires_in) || 3600) * 1000,
   };
+}
+
+/**
+ * Best-effort server-side revoke of a Codex refresh token (JSON body, same
+ * shape as codex-rs revoke_auth_tokens). Never throws on an HTTP error —
+ * callers log and move on, exactly like the CLI.
+ */
+export async function revokeCodexRefreshToken(
+  refreshToken,
+  endpoint = CODEX_REVOKE_ENDPOINT,
+) {
+  if (typeof refreshToken !== 'string' || !refreshToken) {
+    return { ok: false, skipped: true, status: 0, message: 'no refresh token' };
+  }
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({
+      token: refreshToken,
+      token_type_hint: 'refresh_token',
+      client_id: CODEX_CLIENT_ID,
+    }),
+    signal: AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS),
+  });
+  const text = await response.text().catch(() => '');
+  let message = text.slice(0, 200);
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.error?.message === 'string') message = parsed.error.message;
+    else if (typeof parsed?.error === 'string') message = parsed.error;
+  } catch {
+    // plain-text or empty body
+  }
+  return { ok: response.ok, skipped: false, status: response.status, message };
 }
 
 export function resolveCodexCliBin({
