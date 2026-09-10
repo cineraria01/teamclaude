@@ -1633,7 +1633,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         // auth401 = accounts that answered 401 after their refresh chance (cascade
         // guard input + per-request exclusion); authParked = what THIS request parked,
         // kept so a cascade can put it back.
-        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? req.socket : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs, resetCredits: resetCreditController, resetCreditAttempts: 0, resetCreditRetried: new Set(), resetCreditBackstopYielded: false };
+        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), triedCapacity: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? req.socket : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs, resetCredits: resetCreditController, resetCreditAttempts: 0, resetCreditRetried: new Set(), resetCreditBackstopYielded: false };
         try {
           if (isStatusRequest) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2393,7 +2393,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     ctx.credentialType = 'oauth';
   }
   const requestExclusions = (extra = null) => {
-    const excluded = new Set(extra || []);
+    const excluded = new Set([...(extra || []), ...ctx.triedCapacity]);
     if (ctx.provider === 'codex' && ctx.credentialType != null) {
       for (const candidate of accountManager.accounts) {
         if (candidate.type !== ctx.credentialType) excluded.add(candidate);
@@ -2842,6 +2842,15 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       : fetch(upstreamUrl, { ...requestOptions, redirect: 'manual' });
     ctx.preferredAccountUuid = null;
     const upstreamRes = await upstreamRequest;
+    const retryCapacity = async () => {
+      ctx.triedCapacity.add(account);
+      if (res.destroyed || ctx.abortSignal?.aborted || retryCount >= maxRetries
+          || !(hasUsable(ctx.triedCapacity) || hasCapped(ctx.triedCapacity))) return false;
+      console.log(`[TeamCodex] Model capacity rejected on "${account.name}" — trying another account for ${ctx.model}`);
+      releaseHeld();
+      await forwardRequest(req, res, body, accountManager, upstream, retryCount + 1, hooks, reqId, ctx, logDir);
+      return true;
+    };
     const contentType = upstreamRes.headers.get('content-type');
     let isStreaming = isEventStream(contentType);
     // The Codex backend can omit Content-Type on successful Responses SSE.
@@ -3436,7 +3445,27 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     // not a bad account.
     if (RETRYABLE_STATUS.has(upstreamRes.status)) {
       const code = upstreamRes.status;
-      await upstreamRes.body?.cancel();
+      // A structured capacity rejection is safe to retry; generic 5xx is not.
+      if (ctx.provider === 'codex' && code === 503 && method === 'POST'
+          && isCodexResponsesPath(req.url) && contentType?.includes('application/json')) {
+        const rejectedBody = await readBodyBounded(upstreamRes.body, ctx.maxResponseBytes,
+          ctx.reserveResponseBytes, ctx.releaseReservedResponseBytes);
+        let rejected;
+        try { rejected = JSON.parse(rejectedBody?.toString()); } catch { /* Not a capacity rejection. */ }
+        if (rejected?.error?.code === 'server_is_overloaded') {
+          if (await retryCapacity()) return;
+          ctx.status = code;
+          if (!res.destroyed && !res.headersSent) {
+            res.writeHead(code, { 'content-type': 'application/json',
+              ...(upstreamRes.headers.has('retry-after') ? { 'retry-after': upstreamRes.headers.get('retry-after') } : {}),
+            });
+            res.end(rejectedBody);
+          }
+          return;
+        }
+      } else {
+        await upstreamRes.body?.cancel();
+      }
 
       // A 5xx only proves the response failed, not that the upstream skipped
       // the request. Replaying a POST here can duplicate inference, tool side
@@ -3585,7 +3614,11 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       const ensureHeaders = () => {
         if (!res.headersSent) res.writeHead(upstreamRes.status, responseHeaders);
       };
-      if (!ctx.streamRecovery) ensureHeaders(); // legacy: headers first, bytes as they come
+      const capacityProbe = ctx.provider === 'codex' && method === 'POST'
+        && isCodexResponsesPath(req.url) && parseStreamUsage && retryCount < maxRetries
+        && (hasUsable(new Set([...ctx.triedCapacity, account]))
+          || hasCapped(new Set([...ctx.triedCapacity, account])));
+      if (!ctx.streamRecovery && !capacityProbe) ensureHeaders(); // legacy: headers first
       const outcome = await streamResponse(
         upstreamRes.body,
         res,
@@ -3603,7 +3636,18 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
         ctx.releaseAuxiliaryResponseBytes,
         parseStreamUsage,
         upstreamRes.headers.get('content-encoding'),
+        capacityProbe,
       );
+      if (outcome.capacityRejected) {
+        if (await retryCapacity()) return;
+        ensureHeaders();
+        res.end(outcome.capacityBody);
+        return;
+      }
+      if (capacityProbe && outcome.completed && !res.headersSent && !res.destroyed) {
+        ensureHeaders();
+        res.end();
+      }
       if (outcome.limitExceeded && !res.headersSent && !res.destroyed) {
         ctx.status = 502;
         res.writeHead(502, codexRecoveryResponseHeaders(
@@ -3944,8 +3988,34 @@ async function streamResponse(
   releaseAuxiliaryResponseBytes = () => {},
   parseUsage = true,
   contentEncoding = null,
+  capacityProbe = false,
 ) {
   const reader = webStream.getReader();
+  let capacityPrefix = EMPTY_BYTES;
+  // ponytail: rescan only a 64 KiB prefix; use incremental parsing if this cap grows.
+  // Never hold or retry any response containing model output/tool events.
+  const classifyPrefix = bytes => {
+    const frames = bytes.toString('utf8').split(/\r?\n\r?\n/);
+    frames.pop(); // A partial last frame is not evidence of rejection.
+    for (const frame of frames) {
+      const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trimStart()).join('\n');
+      if (!data) continue;
+      let event;
+      try { event = JSON.parse(data); } catch { return 'pass'; }
+      if (!event || typeof event !== 'object') return 'pass';
+      if (event.type === 'keepalive') continue;
+      const response = event.response;
+      if (response?.output?.length || response?.usage?.output_tokens > 0) return 'pass';
+      if (['response.created', 'response.in_progress'].includes(event.type)) continue;
+      if ((event.type === 'error' && event.error?.code === 'server_is_overloaded')
+          || (event.type === 'response.failed' && response?.error?.code === 'server_is_overloaded')) {
+        return 'capacity';
+      }
+      return 'pass';
+    }
+    return 'wait';
+  };
   // Usage-parsing side buffer, kept as RAW BYTES and split on the SSE event
   // boundary as bytes ("\n\n" is ASCII, so the split can never land inside a
   // multi-byte UTF-8 sequence). Reservations are in raw bytes too, so the
@@ -4200,6 +4270,30 @@ async function streamResponse(
       // Client disconnected — stop reading from upstream
       if (res.destroyed) break;
 
+      if (capacityProbe) {
+        const size = capacityPrefix.length + step.value.length;
+        if (size <= 64 * 1024 && reserveAuxiliaryResponseBytes(size)) {
+          const combined = Buffer.concat([capacityPrefix, step.value]);
+          releaseAuxiliaryResponseBytes(capacityPrefix.length);
+          capacityPrefix = combined;
+          const classification = classifyPrefix(combined);
+          if (classification === 'capacity') {
+            outcome.capacityRejected = true;
+            outcome.capacityBody = capacityPrefix;
+            return outcome;
+          }
+          if (classification === 'wait') continue;
+          step.value = capacityPrefix;
+          capacityProbe = false;
+        } else {
+          if (capacityPrefix.length && !await relayChunk(capacityPrefix)) break;
+          releaseAuxiliaryResponseBytes(capacityPrefix.length);
+          capacityPrefix = EMPTY_BYTES;
+          capacityProbe = false;
+        }
+      }
+      releaseAuxiliaryResponseBytes(capacityPrefix.length);
+      capacityPrefix = EMPTY_BYTES;
       const bytes = framer ? framer.push(step.value) : step.value;
       if (framer?.limitExceeded) {
         outcome.limitExceeded = true;
@@ -4219,6 +4313,7 @@ async function streamResponse(
       if (!transactional) framer?.releaseForwarded(bytes.length);
       if (!relayed) break;
     }
+    if (capacityPrefix.length && !res.destroyed) await relayChunk(capacityPrefix);
 
     if (outcome.limitExceeded) return outcome;
 
@@ -4266,6 +4361,7 @@ async function streamResponse(
     outcome.responseCompleted = endedNormally
       && (terminalObserver?.sawResponseCompleted || encodedTerminalObserver?.sawResponseCompleted || false);
   } finally {
+    releaseAuxiliaryResponseBytes(capacityPrefix.length);
     // Cancel upstream reader to stop consuming data nobody needs
     reader.cancel().catch(() => {});
     if (spillFile) await spillFile.close().catch(() => {});

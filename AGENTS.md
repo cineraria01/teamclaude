@@ -147,3 +147,11 @@ Related gotcha: **`expiresAt` may arrive in seconds or milliseconds.** OAuth end
 - Claude defaults to `continuityMode: false`; Codex defaults to `true`. Preserve explicit config values, including old configs that opt in.
 - `run` defaults `ENABLE_TOOL_SEARCH` to `true` for Claude only, preserving explicit environment overrides. This prevents eager loading of the entire MCP tool catalog on a custom API host.
 - Recovery UUIDs may yield to healthy capacity only after a completed 429 or known quota exhaustion. Missing, disabled, and auth-failed identities remain fail-closed. Keep the source-account removal guard during credential refresh.
+
+## Explicit Codex capacity rejection
+
+`server_is_overloaded` on HTTP 503 JSON or pre-output, uncompressed Responses SSE
+is an explicit rejection and may fail over with the same body/model. A request's
+`triedCapacity` set is never cleared by continuity or quota retries. Stream probing
+is limited to a 64 KiB prefix; output/tool events end probing. Generic 5xx and
+ambiguous network failures keep the no-POST-replay rule.

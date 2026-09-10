@@ -1233,3 +1233,18 @@ known general/model quota exhaustion releases that preference for this request s
 healthy accounts can serve it. Missing, disabled, and auth-failed identities still
 fail closed; this does not change credential passthrough routes or replay an
 ambiguous network failure.
+
+### Codex model capacity failover
+
+If a Codex Responses request is rejected with `server_is_overloaded` (the CLI's
+“Selected model is at capacity” warning), TeamCodex tries another eligible account
+with the same model and request. This also applies after a quota-driven account
+switch. Each capacity-rejected account is excluded for the rest of that request;
+when no alternative remains, the last rejection is returned without a new loop.
+
+The rejection must be explicit: HTTP 503 JSON, or an uncompressed SSE `error` /
+`response.failed` before any output or tool event. A bounded 64 KiB stream prefix
+allows keepalives and empty `response.created` / `response.in_progress` events.
+Once output begins, or for generic 5xx, malformed/oversized prefixes, compressed
+streams, and ambiguous disconnects, the proxy preserves existing passthrough
+behavior. Account quota, credentials, and future requests are not changed.
