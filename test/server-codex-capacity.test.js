@@ -97,3 +97,12 @@ test('generic HTTP 503 is not replayed as a capacity rejection', async t => {
   assert.match(await response.text(), /not replayed/);
   assert.equal(requests.length, 1);
 });
+
+test('capacity SSE without Content-Type still switches accounts for an explicit stream request', async t => {
+  const { requests, send } = await fixture(t, (req, res) => {
+    res.writeHead(200);
+    res.end(req.headers['chatgpt-account-id'] === '0' ? capacity : success);
+  }, 2);
+  assert.equal(await (await send()).text(), success);
+  assert.deepEqual(requests.map(r => r.account), ['0', '1']);
+});
