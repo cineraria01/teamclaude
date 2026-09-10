@@ -243,6 +243,37 @@ const AUTH_401_CASCADE_THRESHOLD = 2;
 // persisted; it only has to be unique among live parks.
 let authParkSeq = 0;
 
+// Codex overload rejection codes. The CLI maps both to "Selected model is at
+// capacity"; the code may sit at the event root, under `error`, or under
+// `response.error` (response.failed).
+const isOverloadCode = code => code === 'server_is_overloaded' || code === 'slow_down';
+function isOverloadEvent(event) {
+  return (event.type === 'error' && (isOverloadCode(event.code) || isOverloadCode(event.error?.code)))
+    || (event.type === 'response.failed' && isOverloadCode(event.response?.error?.code));
+}
+// Capacity-probe vocabulary. While the probe holds a Responses stream nothing
+// has reached the client, so any structural event may still be followed by an
+// overload rejection; only model output (or a terminal event the client must
+// see verbatim) releases the hold.
+const CAPACITY_OUTPUT_EVENT = /^response\.(?:output_text|output_text_annotation|refusal|reasoning_text|reasoning_summary_text|function_call_arguments|custom_tool_call_input|mcp_call_arguments|mcp_call|mcp_list_tools|web_search_call|file_search_call|code_interpreter_call|image_generation_call|audio|content_part|text)\b/;
+const isCapacityOutputEvent = type => CAPACITY_OUTPUT_EVENT.test(type)
+  || type === 'response.output_item.added' || type === 'response.output_item.done';
+const isCapacityTerminalEvent = type =>
+  ['error', 'response.failed', 'response.completed', 'response.incomplete'].includes(type);
+function isCapacityStructuralEvent(type, event) {
+  if (['keepalive', 'ping', 'response.created', 'response.in_progress', 'response.queued',
+    'response.reasoning_summary_part.added', 'response.reasoning_summary_part.done'].includes(type)) return true;
+  if ((type === 'response.output_item.added' || type === 'response.output_item.done')
+      && event.item?.type === 'reasoning') {
+    const parts = [
+      ...(Array.isArray(event.item.summary) ? event.item.summary : []),
+      ...(Array.isArray(event.item.content) ? event.item.content : []),
+    ];
+    return !parts.some(part => typeof part?.text === 'string' && part.text.length > 0);
+  }
+  return false;
+}
+
 export function createProxyServer(accountManager, config, hooks = {}) {
   const provider = config.provider === 'codex' ? 'codex' : 'anthropic';
   const upstream = config.upstream || (provider === 'codex'
@@ -3452,7 +3483,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
           ctx.reserveResponseBytes, ctx.releaseReservedResponseBytes);
         let rejected;
         try { rejected = JSON.parse(rejectedBody?.toString()); } catch { /* Not a capacity rejection. */ }
-        if (rejected?.error?.code === 'server_is_overloaded') {
+        if (isOverloadCode(rejected?.error?.code)) {
           if (await retryCapacity()) return;
           ctx.status = code;
           if (!res.destroyed && !res.headersSent) {
@@ -4004,15 +4035,17 @@ async function streamResponse(
       let event;
       try { event = JSON.parse(data); } catch { return 'pass'; }
       if (!event || typeof event !== 'object') return 'pass';
-      if (event.type === 'keepalive') continue;
+      // The overload check runs first: a rejection is a rejection even when its
+      // frame also reports usage. Unknown bookkeeping events keep the hold
+      // (nothing was relayed yet); the 64 KiB cap bounds how long that lasts.
+      if (isOverloadEvent(event)) return 'capacity';
+      const type = typeof event.type === 'string' ? event.type : '';
+      if (isCapacityTerminalEvent(type)) return 'pass';
       const response = event.response;
       if (response?.output?.length || response?.usage?.output_tokens > 0) return 'pass';
-      if (['response.created', 'response.in_progress'].includes(event.type)) continue;
-      if ((event.type === 'error' && event.error?.code === 'server_is_overloaded')
-          || (event.type === 'response.failed' && response?.error?.code === 'server_is_overloaded')) {
-        return 'capacity';
-      }
-      return 'pass';
+      if (isCapacityStructuralEvent(type, event)) continue;
+      if (isCapacityOutputEvent(type)) return 'pass';
+      continue; // unknown bookkeeping event — no output yet, keep holding
     }
     return 'wait';
   };

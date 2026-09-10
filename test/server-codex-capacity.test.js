@@ -106,3 +106,57 @@ test('capacity SSE without Content-Type still switches accounts for an explicit 
   assert.equal(await (await send()).text(), success);
   assert.deepEqual(requests.map(r => r.account), ['0', '1']);
 });
+
+// A rejection that follows structural frames outside the old allowlist
+// (queued, reasoning scaffolding, future bookkeeping) was relayed to the CLI as
+// "Selected model is at capacity" instead of being replayed on an idle account.
+test('overload after created/in_progress/queued/reasoning/unknown bookkeeping frames still switches accounts', async t => {
+  const rejected = frame({ type: 'response.created', response: { output: [], usage: null } })
+    + frame({ type: 'response.in_progress', response: { output: [] } })
+    + frame({ type: 'response.queued', response: { output: [] } })
+    + frame({ type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning', summary: [], content: [] } })
+    + frame({ type: 'response.reasoning_summary_part.added', part: { type: 'summary_text', text: '' } })
+    + frame({ type: 'response.some_future_bookkeeping', sequence_number: 5 })
+    + frame({ type: 'error', error: { type: 'server_error', code: 'slow_down', message: 'Selected model is at capacity. Please try a different model.' } });
+  const { requests, send } = await fixture(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(req.headers['chatgpt-account-id'] === '0' ? rejected.replaceAll('\n', '\r\n') : success);
+  }, 2);
+  assert.equal(await (await send()).text(), success);
+  assert.deepEqual(requests.map(r => r.account), ['0', '1']);
+});
+
+test('response.failed overload that also reports usage is a rejection, not delivered output', async t => {
+  const rejected = frame({ type: 'response.created', response: { output: [] } })
+    + frame({ type: 'response.failed', response: { output: [], usage: { input_tokens: 1200, output_tokens: 3 }, error: { code: 'server_is_overloaded' } } });
+  const { requests, send } = await fixture(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(req.headers['chatgpt-account-id'] === '0' ? rejected : success);
+  }, 2);
+  assert.equal(await (await send()).text(), success);
+  assert.deepEqual(requests.map(r => r.account), ['0', '1']);
+});
+
+test('a non-overload response.failed after structural frames is relayed verbatim without switching', async t => {
+  const body = frame({ type: 'response.created', response: { output: [] } })
+    + frame({ type: 'response.queued', response: { output: [] } })
+    + frame({ type: 'response.failed', response: { output: [], error: { code: 'invalid_prompt', message: 'bad input' } } });
+  const { requests, send } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(body);
+  }, 2);
+  assert.equal(await (await send()).text(), body);
+  assert.equal(requests.length, 1);
+});
+
+test('unknown bookkeeping frames before real output are relayed intact once output starts', async t => {
+  const body = frame({ type: 'response.created', response: { output: [] } })
+    + frame({ type: 'response.some_future_bookkeeping', sequence_number: 1 })
+    + frame({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', content: [] } })
+    + frame({ type: 'response.output_text.delta', delta: 'hello' })
+    + frame({ type: 'response.completed', response: { output: [{ type: 'message' }], usage: { output_tokens: 1 } } });
+  const { requests, send } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(body);
+  }, 2);
+  assert.equal(await (await send()).text(), body);
+  assert.equal(requests.length, 1);
+});
