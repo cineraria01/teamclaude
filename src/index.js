@@ -1523,9 +1523,9 @@ async function proxyWorkerCommand() {
     };
   }
 
-  // Existing configs predate continuityMode; treat it as enabled unless the
-  // operator explicitly opts out.
-  config.continuityMode = config.continuityMode !== false;
+  // Claude surfaces rate limits after account failover instead of opening a
+  // shared cooldown for every session. Preserve explicit operator settings.
+  config.continuityMode ??= isCodexMode(config);
   // Reset-credit ledger writes (pending intent before the consume POST and
   // the outcome right after) are persisted immediately: the periodic snapshot
   // is 60 s apart and the exit handler never runs on SIGKILL, so without this
@@ -2772,6 +2772,9 @@ async function runCommand(clientArgsOverride = null) {
   delete childEnv[proxyAuthEnv];
   delete childEnv[oauthEnv];
   childEnv.ANTHROPIC_BASE_URL = `http://localhost:${runtimeConfig.proxy.port}`;
+  // Claude disables lazy tool loading on custom hosts unless explicitly enabled.
+  // This transparent proxy supports tool_reference blocks; retain user overrides.
+  childEnv.ENABLE_TOOL_SEARCH ??= 'true';
   if (preserveProxyAuth) childEnv[proxyAuthEnv] = config.proxy.apiKey;
   delete childEnv.DISABLE_GROWTHBOOK;
   await syncLaunchModel(runtimeConfig, clientArgs, childEnv);

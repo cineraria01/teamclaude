@@ -281,7 +281,7 @@ test('loopback malformed recovery marker is rejected before upstream dispatch', 
   assert.equal(upstreamHits, 0);
 });
 
-test('a recovery marker fails closed instead of spilling to another account', async t => {
+test('a quota-exhausted recovery account and a rejected alternate yield to healthy capacity', async t => {
   const upstreamAuth = [];
   const upstream = http.createServer((req, res) => {
     upstreamAuth.push(req.headers.authorization);
@@ -347,9 +347,9 @@ test('a recovery marker fails closed instead of spilling to another account', as
     body: JSON.stringify({ model: 'test-model', messages: [] }),
   });
 
-  assert.equal(response.status, 429);
-  assert.deepEqual(upstreamAuth, []);
-  assert.equal(manager.accounts[1].status, 'active');
+  assert.equal(response.status, 200);
+  assert.deepEqual(upstreamAuth, ['Bearer fixture-b', 'Bearer fixture-c']);
+  assert.equal(manager.accounts[1].status, 'throttled');
 });
 
 test('recovery UUID fails closed if selected account is removed during token refresh', async t => {
@@ -409,3 +409,48 @@ test('recovery UUID fails closed if selected account is removed during token ref
   assert.equal(response.status, 409);
   assert.equal(upstreamHits, 0);
 });
+
+for (const scenario of ['model-exhausted', 'transient-429', 'disabled', 'auth-error', 'missing']) {
+  test(`recovery routing handles ${scenario} identity without hanging`, async t => {
+    const auth = [];
+    const upstream = http.createServer((req, res) => {
+      auth.push(req.headers.authorization);
+      if (scenario === 'transient-429' && req.headers.authorization === 'Bearer fixture-0') {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '60' });
+        res.end('{"type":"error","error":{"type":"rate_limit_error"}}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    t.after(() => close(upstream));
+    const upstreamPort = await listen(upstream);
+    const manager = makeManager(2);
+    if (scenario !== 'transient-429') manager.accounts[0].quota.modelWeekly['7d_oi'] = {
+      utilization: 1, reset: Date.now() + 3600000,
+    };
+    if (scenario === 'disabled') manager.accounts[0].enabled = false;
+    if (scenario === 'auth-error') manager.accounts[0].status = 'error';
+    const server = createProxyServer(manager, {
+      proxy: { apiKey: 'fixture-proxy-key' },
+      upstream: `http://127.0.0.1:${upstreamPort}`,
+      activeWarmup: false,
+      continuityMode: false,
+    });
+    t.after(() => close(server));
+    const port = await listen(server);
+    const recovery = buildClaudeRecoveryEnv({ ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` },
+      scenario === 'missing' ? 'unknown-uuid' : 'uuid-0');
+    const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${recovery.CLAUDE_CODE_OAUTH_TOKEN}` },
+      body: JSON.stringify({ model: 'claude-fable-5-1', messages: [] }),
+      signal: AbortSignal.timeout(3000),
+    });
+    await response.text();
+    assert.equal(response.status, ['model-exhausted', 'transient-429'].includes(scenario) ? 200 : 429);
+    assert.deepEqual(auth, scenario === 'transient-429'
+      ? ['Bearer fixture-0', 'Bearer fixture-1']
+      : scenario === 'model-exhausted' ? ['Bearer fixture-1'] : []);
+  });
+}

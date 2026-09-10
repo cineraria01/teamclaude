@@ -20,6 +20,19 @@ test('default config bounds Claude connection recovery to fifteen minutes', () =
   assert.equal(createDefaultConfig().continuityMaxWaitMs, 900000);
 });
 
+test('Claude defaults to fail-fast rate limits while Codex retains continuity', () => {
+  const previous = process.env.TEAMCLAUDE_PROVIDER;
+  try {
+    process.env.TEAMCLAUDE_PROVIDER = 'anthropic';
+    assert.equal(createDefaultConfig().continuityMode, false);
+    process.env.TEAMCLAUDE_PROVIDER = 'codex';
+    assert.equal(createDefaultConfig().continuityMode, true);
+  } finally {
+    if (previous === undefined) delete process.env.TEAMCLAUDE_PROVIDER;
+    else process.env.TEAMCLAUDE_PROVIDER = previous;
+  }
+});
+
 test('atomicConfigUpdate serializes concurrent writers (no lost update / no resurrection)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tc-cfg-'));
   const cfgPath = join(dir, 'teamclaude.json');

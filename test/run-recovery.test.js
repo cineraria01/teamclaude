@@ -583,7 +583,7 @@ appendFileSync(process.env.FAKE_CLAUDE_CALLS, JSON.stringify({
   assert.equal(manager.currentIndex, 1);
 });
 
-test('real run fails closed when its seeded recovery account cannot serve the request', async t => {
+test('real run releases quota-blocked recovery identity but preserves a capped identity', async t => {
   const scenarios = [
     { name: 'quota-blocked A to healthy B', quotaBlocked: true },
     { name: 'capped A to free B', quotaBlocked: false },
@@ -712,11 +712,11 @@ process.exit(response.status === 200 ? 0 : 9);
         held = null;
       }
 
-      assert.equal(result.status, 9, result.stderr);
+      assert.equal(result.status, scenario.quotaBlocked ? 0 : 9, result.stderr);
       assert.equal(calls.length, 1);
       assert.equal(calls[0].oauthValue, recoveryToken('uuid-a'));
-      assert.equal(calls[0].responseStatus, 429);
-      assert.deepEqual(upstreamAuth, []);
+      assert.equal(calls[0].responseStatus, scenario.quotaBlocked ? 200 : 429);
+      assert.deepEqual(upstreamAuth, scenario.quotaBlocked ? ['Bearer fixture-b'] : []);
     });
   }
 });

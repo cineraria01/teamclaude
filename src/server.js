@@ -2364,6 +2364,18 @@ function codexRecoveryResponseHeaders(req, body, ctx, method, headers = {}) {
 
 async function forwardRequest(req, res, body, accountManager, upstream, retryCount, hooks, reqId, ctx, logDir) {
   const maxRetries = accountManager.accounts.length;
+  // A recovery identity must not lock inference to rejected/exhausted quota.
+  // Missing, disabled, or auth-failed identities still fail closed.
+  const recoveryAccount = typeof ctx.preferredAccountUuid === 'string'
+    ? accountManager.accounts.find(a => a.accountUuid === ctx.preferredAccountUuid)
+    : null;
+  if (recoveryAccount && recoveryAccount.enabled !== false
+      && recoveryAccount.status !== 'error' && !ctx.auth401.has(recoveryAccount)
+      && (ctx.tried429.has(recoveryAccount)
+        || accountManager.isExhausted(recoveryAccount)
+        || accountManager.isModelExhausted(recoveryAccount, ctx.model))) {
+    ctx.preferredAccountUuid = null;
+  }
   // Fresh retry cycle = retryCount 0: the initial dispatch or ANY restart that
   // recursed with 0 (fleet redemption, model fallback, continuity wait,
   // overload backoff, network failover…). The one-shot backstop yield re-arms

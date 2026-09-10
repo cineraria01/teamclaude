@@ -507,7 +507,7 @@ Claude 설정 파일은 `~/.config/teamclaude.json`, Codex 설정 파일은
   "reevalIntervalMs": 300000,
   "maxConcurrentPerAccount": 3,
   "sessionAffinity": true,
-  "continuityMode": true,
+  "continuityMode": false,
   "continuityMaxWaitMs": 900000,
   "continuityMaxSleepMs": 30000,
   "activeWarmup": true,
@@ -526,7 +526,7 @@ Claude 설정 파일은 `~/.config/teamclaude.json`, Codex 설정 파일은
 | `reevalIntervalMs` | sticky 계정의 우선순위 재평가 간격 |
 | `maxConcurrentPerAccount` | 계정 하나의 동시 upstream 요청 수 |
 | `sessionAffinity` | 같은 연결을 기존 계정에 유지 |
-| `continuityMode` | quota 또는 transient/global 429를 deadline 안에서 내부 복구 |
+| `continuityMode` | 내부 대기 복구. Claude 기본 `false`, Codex 기본 `true`; 명시한 설정은 유지 |
 | `continuityMaxWaitMs` | 연속성 내부 복구의 전체 deadline (기본 `900000` = 15분) |
 | `continuityMaxSleepMs` | 연속성 probe 사이의 최대 간격 (기본 `30000` = 30초) |
 | `activeWarmup` | 최소 요청으로 계정 사용량을 선측정 |
@@ -810,3 +810,16 @@ flowchart LR
 ## 라이선스
 
 MIT
+
+### 새 대화부터 Context limit 또는 Compact가 반복될 때
+
+`teamclaude run`은 `ENABLE_TOOL_SEARCH`가 미설정이면 `true`를 전달합니다.
+Claude Code가 프록시 주소에서 도구 설명 전체를 선로딩하던 문제를 막습니다.
+직접 Claude를 실행한다면 설정의 `env.ENABLE_TOOL_SEARCH`를 `"true"`로 지정하고
+클라이언트를 다시 시작하세요. 스킬·MCP를 삭제하거나 대화를 지울 필요는 없습니다.
+
+Claude는 기본적으로 계정 전환을 시도한 뒤 원래 429를 반환하며 전체 세션을
+내부 대기로 묶지 않습니다. 기존 설정에 `continuityMode: true`가 명시돼 있으면
+유지하므로 이 동작을 원할 때 `false`로 변경하세요. Codex 기본 동작은 유지합니다.
+복구용 계정 고정도 429 또는 일반·모델 한도 소진 시에는 정상 계정으로 전환합니다.
+삭제·비활성·인증 오류 계정의 고정은 다른 계정으로 조용히 전환하지 않습니다.

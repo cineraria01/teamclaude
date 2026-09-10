@@ -148,6 +148,7 @@ console.log(JSON.stringify({
   oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
   baseUrl: process.env.ANTHROPIC_BASE_URL,
   disableGrowthbook: process.env.DISABLE_GROWTHBOOK ?? null,
+  toolSearch: process.env.ENABLE_TOOL_SEARCH ?? null,
   args: process.argv.slice(2),
 }));
 `);
@@ -166,6 +167,7 @@ console.log(JSON.stringify({
         CLAUDE_CODE_OAUTH_TOKEN: 'oauth-must-reach-child',
         ANTHROPIC_BASE_URL: 'https://wrong.example',
         DISABLE_GROWTHBOOK: '0',
+        ENABLE_TOOL_SEARCH: undefined,
       },
     });
 
@@ -176,6 +178,7 @@ console.log(JSON.stringify({
     assert.equal(child.oauthToken, 'oauth-must-reach-child');
     assert.equal(child.baseUrl, `http://localhost:${server.port}`);
     assert.equal(child.disableGrowthbook, null);
+    assert.equal(child.toolSearch, 'true');
     assert.deepEqual(child.args, ['--model', 'fable']);
   } finally {
     if (server) await stopStatusServer(server);
@@ -195,6 +198,7 @@ console.log(JSON.stringify({
   args: process.argv.slice(2),
   anthropicModel: process.env.ANTHROPIC_MODEL ?? null,
   disableGrowthbook: process.env.DISABLE_GROWTHBOOK ?? null,
+  toolSearch: process.env.ENABLE_TOOL_SEARCH ?? null,
 }));
 `);
     await chmod(fakeClaude, 0o755);
@@ -210,6 +214,7 @@ console.log(JSON.stringify({
         TEAMCLAUDE_PROVIDER: 'anthropic',
         TEAMCLAUDE_CONFIG: configPath,
         DISABLE_GROWTHBOOK: '1',
+        ENABLE_TOOL_SEARCH: 'false',
       },
     });
 
@@ -218,6 +223,7 @@ console.log(JSON.stringify({
     assert.deepEqual(child.args, ['--model', 'claude-sonnet-5']);
     assert.equal(child.anthropicModel, null);
     assert.equal(child.disableGrowthbook, null);
+    assert.equal(child.toolSearch, 'false');
   } finally {
     if (server) await stopStatusServer(server);
     await rm(dir, { recursive: true, force: true });

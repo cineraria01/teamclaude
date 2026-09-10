@@ -347,7 +347,7 @@ export function createDefaultConfig() {
     // Keep client requests inside the proxy while quota/cooldowns recover rather
     // than surfacing a 429 that interrupts an interactive Claude Code session.
     // A zero max wait retains the legacy fixed retry-count behavior.
-    continuityMode: true,
+    continuityMode: provider === 'codex',
     continuityMaxWaitMs: DEFAULT_CONTINUITY_MAX_WAIT_MS,
     continuityMaxSleepMs: 30000,
     continuityJitterMs: 500,

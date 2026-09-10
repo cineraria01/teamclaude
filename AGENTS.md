@@ -52,7 +52,7 @@ clear ownership:
 6. **429 handling classifies the 429 after `updateQuota` folds in response headers:**
    - **Model-scoped exhaustion** (a complete fresh `7d_oi` window, or a live labeled Fable/Mythos 429) excludes only that account for the matching model. Other models remain eligible; after every eligible account returns labeled model exhaustion, a configured `modelFallbacks` chain may run.
    - **General account-quota exhaustion** throttles that account for `retry-after` (clamped to `[1s, 5m]`) and immediately re-dispatches to another available account.
-   - **Non-exhaustion/transient/global 429** first uses the bounded per-request account failover budget without poisoning account state, then keeps the original model and retries inside the proxy until `continuityMaxWaitMs`. Sleeps are capped by `continuityMaxSleepMs`; when the deadline expires the last complete upstream 429 (body and end-to-end headers) is returned.
+   - **Non-exhaustion/transient/global 429** first uses the bounded per-request account failover budget without poisoning account state, then returns the original 429 in Claude mode by default. Explicit `continuityMode: true` (the Codex default) keeps the original model and retries inside the proxy until `continuityMaxWaitMs`. Sleeps are capped by `continuityMaxSleepMs`; when the deadline expires the last complete upstream 429 (body and end-to-end headers) is returned.
    - An explicit 429 is safe to replay because upstream completed the rejection. Network errors, 5xx, incomplete streams, and a dispatched timeout are ambiguous and are replayed internally only for replay-safe methods. A dispatched unsafe POST timeout returns a complete 502 instead of being disguised as an older 429; if the deadline expires before another dispatch starts, the saved 429 is returned without sending a new request.
 
    When the active account crosses `switchThreshold`, the *next* request switches to the highest-priority account (see Account selection below).
@@ -141,3 +141,9 @@ Related gotcha: **`expiresAt` may arrive in seconds or milliseconds.** OAuth end
 - Token refresh is **coalesced** via `account._refreshPromise` so concurrent requests trigger one refresh.
 - Streaming responses must check `res.destroyed` to stop pulling from upstream when the client disconnects, and handle backpressure by racing `drain` against `close`.
 - Log lines are prefixed `[TeamClaude]`; the TUI strips that prefix when mirroring `console.log`/`console.error` into its activity pane. Credentials are masked (sliced) in `--log-to` request dumps.
+
+## Claude context and quota recovery defaults
+
+- Claude defaults to `continuityMode: false`; Codex defaults to `true`. Preserve explicit config values, including old configs that opt in.
+- `run` defaults `ENABLE_TOOL_SEARCH` to `true` for Claude only, preserving explicit environment overrides. This prevents eager loading of the entire MCP tool catalog on a custom API host.
+- Recovery UUIDs may yield to healthy capacity only after a completed 429 or known quota exhaustion. Missing, disabled, and auth-failed identities remain fail-closed. Keep the source-account removal guard during credential refresh.
