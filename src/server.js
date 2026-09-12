@@ -323,6 +323,22 @@ function isCapacityStructuralEvent(type, event) {
   return false;
 }
 
+// Where to read an OAuth account's own usage report. `false` disables it; a
+// string names the endpoint (tests point it at a fixture); otherwise it is
+// derived only when the upstream is the real Anthropic API, so a custom or
+// fixture upstream never receives an unexpected GET.
+export function resolveAnthropicUsageUrl(configured, upstream) {
+  if (configured === false) return null;
+  if (typeof configured === 'string' && configured) return configured;
+  try {
+    const url = new URL(upstream);
+    if (url.protocol === 'https:' && url.hostname === 'api.anthropic.com') {
+      return `${url.origin}/api/oauth/usage`;
+    }
+  } catch { /* not a URL — no usage endpoint */ }
+  return null;
+}
+
 export function createProxyServer(accountManager, config, hooks = {}) {
   const provider = config.provider === 'codex' ? 'codex' : 'anthropic';
   const upstream = config.upstream || (provider === 'codex'
@@ -477,6 +493,13 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   // can't push an account over maxConcurrent, and only learns from a 2xx (or an
   // account-level quota 429). `config.activeWarmup: false` disables it all.
   const activeWarmup = provider === 'anthropic' && config.activeWarmup !== false;
+  // OAuth usage endpoint (anthropic): the account's own quota report, which
+  // carries the Fable weekly window in limits[] — so idle OAuth accounts are
+  // measured without spending a probe request, and a missing model window is
+  // recovered reliably instead of hoping a probe's headers report it. Enabled
+  // only against the real Anthropic upstream (or an explicit URL); tests and
+  // custom upstreams keep the probe-based warm-up.
+  const anthropicUsageUrl = activeWarmup ? resolveAnthropicUsageUrl(config.oauthUsageUrl, upstream) : null;
   const codexUsageRefresh = provider === 'codex' && config.codexUsageRefresh !== false;
   const warmupIntervalMs = Number.isFinite(config.warmupIntervalMs)
     ? Math.max(0, config.warmupIntervalMs)
@@ -961,7 +984,67 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   //    capacity 429 could not.
   //  - Learns ONLY from a response upstream accepted (2xx) or an account-level
   //    quota 429 ('rejected') — a 4xx / non-exhaustion 429 / 5xx never mutates state.
+  // OAuth usage reports Fable in limits[]. Response headers alone leave idle
+  // accounts stale and cannot recover a missing model window reliably.
+  async function refreshAnthropicUsage(account, force = false) {
+    if (!anthropicUsageUrl || !activeWarmup || warmupClosed) return false;
+    if (account.type !== 'oauth' || account.subscriptionDisabled) return false;
+    if (account._anthropicUsagePromise) return account._anthropicUsagePromise;
+    if (!force && Date.now() - (account._anthropicUsageCheckedAt || 0) < 60_000) return false;
+    account._anthropicUsageCheckedAt = Date.now();
+    account._anthropicUsagePromise = (async () => {
+      const probe = probeSignal();
+      try {
+        await accountManager.ensureTokenFresh(account);
+        const res = await fetch(anthropicUsageUrl, {
+          headers: { authorization: `Bearer ${account.credential}`, 'anthropic-beta': 'oauth-2025-04-20' },
+          redirect: 'error', signal: probe.signal,
+        });
+        if (!res.ok) { await res.body?.cancel(); throw new Error(`HTTP ${res.status}`); }
+        const data = await res.json();
+        const headers = {};
+        const put = (label, percent, reset) => {
+          const at = typeof reset === 'string' ? Date.parse(reset) : NaN;
+          if (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 0 || percent > 100
+              || !Number.isFinite(at) || at <= Date.now()) return;
+          headers[`anthropic-ratelimit-unified-${label}-utilization`] = String(percent / 100);
+          headers[`anthropic-ratelimit-unified-${label}-reset`] = String(Math.ceil(at / 1000));
+        };
+        put('5h', data.five_hour?.utilization, data.five_hour?.resets_at);
+        put('7d', data.seven_day?.utilization, data.seven_day?.resets_at);
+        for (const limit of Array.isArray(data.limits) ? data.limits : []) {
+          if (limit?.kind === 'weekly_scoped' && !limit.scope?.surface
+              && /^fable(?:\s|$)/i.test(limit.scope?.model?.display_name || '')) {
+            put('7d_oi', limit.percent, limit.resets_at);
+          }
+        }
+        if (!Object.keys(headers).length) throw new Error('No valid quota windows');
+        if (warmupClosed || accountManager.accounts[account.index] !== account) return false;
+        headers['anthropic-ratelimit-unified-status'] = account.quota.unifiedStatus;
+        accountManager.updateQuota(account, headers);
+        return true;
+      } catch (err) {
+        if (!warmupClosed) console.error(`[TeamClaude] OAuth usage refresh failed for "${account.name}": ${err.message}`);
+        return false;
+      } finally {
+        probe.cleanup();
+      }
+    })();
+    try { return await account._anthropicUsagePromise; }
+    finally { delete account._anthropicUsagePromise; }
+  }
+
+  function refreshAnthropicQuotaAll() {
+    if (!anthropicUsageUrl) return Promise.resolve([]);
+    return Promise.all(accountManager.accounts.filter(a =>
+      a.type === 'oauth' && a.enabled !== false && a.status !== 'error')
+      .map(a => refreshAnthropicUsage(a)));
+  }
+
   async function warmupAccount(account, { force = false } = {}) {
+    // The usage report measures an OAuth account outright; fall back to the
+    // probe only when it is unavailable (custom upstream, endpoint failure).
+    if (await refreshAnthropicUsage(account, force)) return true;
     if (!probeTemplate || warmupClosed || account._warming) return;
     // Don't refresh from a background probe; skip an OAuth account that needs one.
     if (account.type === 'oauth' && isTokenExpiringSoon(account.expiresAt)) return;
@@ -1067,7 +1150,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   // is no known-accepted request shape to replay).
   async function refreshQuotaAll() {
     if (provider === 'codex') return refreshCodexQuotaAll();
-    if (!activeWarmup || warmupClosed || !probeTemplate) return -1;
+    if (!activeWarmup || warmupClosed || (!probeTemplate && !anthropicUsageUrl)) return -1;
     const targets = accountManager.accounts.filter(a =>
       (a.status !== 'error' || a.errorReason === 'subscription-disabled')
       && a.inflight === 0 && !a._warming);
@@ -1190,6 +1273,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       // idle proxy would never re-measure after a reset. Sweep → unmeasured →
       // the fan-out below re-probes → fresh data → ordering/display update.
       accountManager.sweepExpired();
+      refreshAnthropicQuotaAll();
       warmupUnmeasured();
       topUpPartialQuota(); // heal half-measured accounts (a window swept, the other survives)
       topUpModelWeekly(); // heal fully-measured accounts still missing their Fable window
@@ -1828,11 +1912,13 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   const closeServer = server.close.bind(server);
   server.close = (cb) => { shutdownWarmup(); return closeServer(cb); };
   server.on('close', shutdownWarmup);
+  if (anthropicUsageUrl) server.once('listening', () => { refreshAnthropicQuotaAll(); });
 
   // Exposed for the TUI Reload path (and tests): forced fleet-wide quota
   // re-measure. Kept off the HTTP surface — it spends real upstream requests,
   // so only a deliberate local action should trigger it.
   server.refreshQuotaAll = refreshQuotaAll;
+  server.refreshAnthropicQuotaAll = refreshAnthropicQuotaAll;
 
   // Probe-template persistence (wired into the quota snapshot by index.js).
   // The template is the only known-accepted request shape — without persisting
