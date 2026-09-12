@@ -189,7 +189,7 @@ test('recovery auth pins each session to its rotated account across concurrent r
   const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN}`,
+      authorization: `Bearer ${recoveryEnv.ANTHROPIC_AUTH_TOKEN}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify({ model: 'test-model', messages: [] }),
@@ -233,7 +233,7 @@ test('rotate endpoint excludes the caller recovery UUID when global current belo
     method: 'POST',
     headers: {
       'x-api-key': 'fixture-proxy-key',
-      authorization: `Bearer ${recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN}`,
+      authorization: `Bearer ${recoveryEnv.ANTHROPIC_AUTH_TOKEN}`,
     },
   });
   const result = await response.json();
@@ -341,7 +341,7 @@ test('a quota-exhausted recovery account and a rejected alternate yield to healt
   const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN}`,
+      authorization: `Bearer ${recoveryEnv.ANTHROPIC_AUTH_TOKEN}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify({ model: 'test-model', messages: [] }),
@@ -395,7 +395,7 @@ test('recovery UUID fails closed if selected account is removed during token ref
   const responsePromise = fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN}`,
+      authorization: `Bearer ${recoveryEnv.ANTHROPIC_AUTH_TOKEN}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify({ model: 'test-model', messages: [] }),
@@ -443,7 +443,7 @@ for (const scenario of ['model-exhausted', 'transient-429', 'disabled', 'auth-er
       scenario === 'missing' ? 'unknown-uuid' : 'uuid-0');
     const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${recovery.CLAUDE_CODE_OAUTH_TOKEN}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${recovery.ANTHROPIC_AUTH_TOKEN}` },
       body: JSON.stringify({ model: 'claude-fable-5-1', messages: [] }),
       signal: AbortSignal.timeout(3000),
     });

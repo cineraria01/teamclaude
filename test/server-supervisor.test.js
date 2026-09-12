@@ -576,7 +576,7 @@ test('supervisor rejects remote account rotation even with a valid proxy API key
       method: 'POST',
       headers: {
         'x-api-key': 'tc-remote-rotate',
-        authorization: `Bearer ${recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN}`,
+        authorization: `Bearer ${recoveryEnv.ANTHROPIC_AUTH_TOKEN}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ model: 'test-model', messages: [] }),

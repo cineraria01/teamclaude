@@ -2474,34 +2474,15 @@ async function syncLaunchModel(config, claudeArgs, childEnv) {
   }
 }
 
-async function seedClaudeRecoveryAccount(config, childEnv) {
-  // Preserve any inherited credential; it may be a real external OAuth token.
-  if (Object.hasOwn(childEnv, 'CLAUDE_CODE_OAUTH_TOKEN')) return;
-
-  const port = Number(config.proxy?.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/teamclaude/status`, {
-      headers: {
-        'x-api-key': config.proxy.apiKey,
-        'x-teamcodex-status-identity': '1',
-      },
-      signal: AbortSignal.timeout(1500),
-    });
-    if (!response.ok) return;
-    const status = await response.json();
-    if (typeof status?.currentAccountUuid !== 'string'
-        || status.currentAccountUuid.length === 0) return;
-    childEnv.CLAUDE_CODE_OAUTH_TOKEN = buildClaudeRecoveryEnv(
-      childEnv,
-      status.currentAccountUuid,
-    ).CLAUDE_CODE_OAUTH_TOKEN;
-  } catch {}
+async function seedClaudeRecoveryAccount() {
+  // Never expose TeamClaude's internal routing marker as a Claude Code
+  // credential at launch: Claude Code then disables the claude.ai connectors
+  // and enables its Fable usage-credit gate. Request-level proxy failover
+  // handles rotation; the marker is only set by an explicit login recovery.
 }
 
 async function recoverExpiredClaudeLogin(config, childEnv) {
-  const recoveryToken = childEnv?.CLAUDE_CODE_OAUTH_TOKEN;
+  const recoveryToken = childEnv?.ANTHROPIC_AUTH_TOKEN ?? childEnv?.CLAUDE_CODE_OAUTH_TOKEN;
   const failedAccountUuid = parseClaudeRecoveryAccount(
     typeof recoveryToken === 'string' ? `Bearer ${recoveryToken}` : null,
   );
@@ -2766,9 +2747,10 @@ async function runCommand(clientArgsOverride = null) {
 
   const proxyAuthEnv = ['ANTHROPIC', 'API', 'KEY'].join('_');
   const oauthEnv = ['ANTHROPIC', 'AUTH', 'TOKEN'].join('_');
-  const preserveProxyAuth = typeof config.proxy.apiKey === 'string'
-    && config.proxy.apiKey.length > 0
-    && childEnv[proxyAuthEnv] === config.proxy.apiKey;
+  // Proxy auth is never handed to Claude Code: an ANTHROPIC_API_KEY in its
+  // environment switches it to API-key mode (no claude.ai login features),
+  // and the loopback proxy does not require it for inference requests.
+  const preserveProxyAuth = false;
   delete childEnv[proxyAuthEnv];
   delete childEnv[oauthEnv];
   childEnv.ANTHROPIC_BASE_URL = `http://localhost:${runtimeConfig.proxy.port}`;
@@ -2780,8 +2762,7 @@ async function runCommand(clientArgsOverride = null) {
   await syncLaunchModel(runtimeConfig, clientArgs, childEnv);
   await seedClaudeRecoveryAccount(runtimeConfig, childEnv);
 
-  // Clear higher-precedence API credentials so Claude Code keeps its OAuth
-  // subscription while routing through the proxy.
+  // The proxy authenticates upstream accounts; the client holds only its local routing marker.
   if (config.autoResumeClaude === true || config.codexFallbackOnExhaustion === true) {
     const result = await runClaudeWithRecovery({
       claudeArgs: clientArgs,

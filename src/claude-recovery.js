@@ -28,11 +28,11 @@ function confirmedAccountRotation(recovery, childEnv) {
       || typeof recovery.childEnv !== 'object') {
     return false;
   }
-  const recoveryToken = childEnv?.CLAUDE_CODE_OAUTH_TOKEN;
+  const recoveryToken = childEnv?.ANTHROPIC_AUTH_TOKEN ?? childEnv?.CLAUDE_CODE_OAUTH_TOKEN;
   const previousMarker = parseClaudeRecoveryAccount(
     typeof recoveryToken === 'string' ? `Bearer ${recoveryToken}` : null,
   );
-  const currentRecoveryToken = recovery.childEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  const currentRecoveryToken = recovery.childEnv.ANTHROPIC_AUTH_TOKEN ?? recovery.childEnv.CLAUDE_CODE_OAUTH_TOKEN;
   const currentMarker = parseClaudeRecoveryAccount(
     typeof currentRecoveryToken === 'string' ? `Bearer ${currentRecoveryToken}` : null,
   );

@@ -287,7 +287,7 @@ if (sessionFlag >= 0) {
   setInterval(() => {}, 1000);
 } else {
   setTimeout(() => process.exit(
-    process.env.CLAUDE_CODE_OAUTH_TOKEN ? 0 : 42
+    process.env.ANTHROPIC_AUTH_TOKEN ? 0 : 42
   ), 20);
 }
 `;
@@ -386,8 +386,10 @@ appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({
     FAKE_CODEX_CALLS: codexCalls,
     ANTHROPIC_API_KEY: 'must-not-reach-child',
     ANTHROPIC_AUTH_TOKEN: 'must-not-reach-child',
+    // Rotation is confirmed against the marker the session already carries
+    // (left by an earlier recovery relaunch); run itself never seeds one.
+    CLAUDE_CODE_OAUTH_TOKEN: recoveryToken('uuid-a'),
   };
-  delete env.CLAUDE_CODE_OAUTH_TOKEN;
   delete env.CLAUDE_CONFIG_DIR;
 
   const result = await runCli(['run'], {
@@ -411,6 +413,9 @@ appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({
       supervised: call.supervised,
     })),
     [
+      // The inherited marker passes through untouched; the recovery relaunch
+      // re-issues it as a bearer auth token, never as CLAUDE_CODE_OAUTH_TOKEN
+      // (Claude Code would take that for its login).
       {
         oauthPresent: true,
         apiKeyPresent: false,
@@ -418,9 +423,9 @@ appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({
         supervised: true,
       },
       {
-        oauthPresent: true,
+        oauthPresent: false,
         apiKeyPresent: false,
-        authTokenPresent: false,
+        authTokenPresent: true,
         supervised: true,
       },
     ],
@@ -462,7 +467,7 @@ appendFileSync(process.env.FAKE_CODEX_CALLS, JSON.stringify({
   assert.deepEqual(await jsonLines(codexCalls), []);
 });
 
-test('real run seeds only a missing Claude OAuth marker from the production proxy status', async t => {
+test('real run never seeds a recovery marker and preserves an inherited OAuth token', async t => {
   const root = await mkdtemp(join(tmpdir(), 'teamclaude-run-seed-recovery-marker-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
@@ -477,6 +482,7 @@ import { appendFileSync } from 'node:fs';
 appendFileSync(process.env.FAKE_CLAUDE_CALLS, JSON.stringify({
   args: process.argv.slice(2),
   oauthValue: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
+  authTokenValue: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
 }) + '\\n');
 `;
   await writeFile(join(bin, 'claude'), fakeClaude, { mode: 0o755 });
@@ -534,10 +540,13 @@ appendFileSync(process.env.FAKE_CLAUDE_CALLS, JSON.stringify({
   assert.equal('credential' in status.accounts[1], false);
   assert.doesNotMatch(JSON.stringify(status), /secret-(?:access|refresh)-[ab]/);
 
+  // Seeding the proxy's current account as CLAUDE_CODE_OAUTH_TOKEN made Claude
+  // Code treat the marker as its login (connectors off, Fable credit gate on),
+  // so launch leaves the child unmarked; request-level failover routes it.
   const cases = [
     {
       name: 'unmarked child',
-      expectedToken: recoveryToken('uuid-b'),
+      expectedToken: null,
     },
     {
       name: 'external OAuth token',
@@ -578,6 +587,7 @@ appendFileSync(process.env.FAKE_CLAUDE_CALLS, JSON.stringify({
       assert.equal(result.status, 0, `${scenario.name}: ${result.stderr}`);
       assert.equal(calls.length, 1);
       assert.equal(calls[0].oauthValue, scenario.expectedToken);
+      assert.equal(calls[0].authTokenValue, null);
     });
   }
   assert.equal(manager.currentIndex, 1);
@@ -698,8 +708,9 @@ process.exit(response.status === 200 ? 0 : 9);
         TEAMCLAUDE_PROVIDER: 'anthropic',
         TEAMCLAUDE_CONFIG: configPath,
         FAKE_CLAUDE_CALLS: claudeCalls,
+        // A marker left by an earlier recovery relaunch; run itself never seeds one.
+        CLAUDE_CODE_OAUTH_TOKEN: recoveryToken('uuid-a'),
       };
-      delete env.CLAUDE_CODE_OAUTH_TOKEN;
 
       const result = await runCli(['run'], {
         cwd: project,
@@ -737,7 +748,7 @@ import { join } from 'node:path';
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CLAUDE_CALLS, JSON.stringify({
   args,
-  oauthValue: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
+  oauthValue: process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
 }) + '\\n');
 const resume = args.indexOf('--resume');
 if (resume >= 0 && args.at(-1) !== 'continue') {

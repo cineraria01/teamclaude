@@ -388,7 +388,7 @@ console.log(JSON.stringify({ baseUrl: process.env.ANTHROPIC_BASE_URL }));
   }
 });
 
-test('run preserves the exact loopback proxy API key for a logged-out client', async () => {
+test('run strips the loopback proxy API key so Claude Code keeps its login mode', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'teamclaude-run-proxy-key-'));
   let server;
   try {
@@ -423,7 +423,9 @@ console.log(JSON.stringify({
 
     assert.equal(result.status, 0, result.stderr);
     const child = JSON.parse(result.stdout.trim());
-    assert.equal(child.apiKey, 'loopback-proxy-key');
+    // An ANTHROPIC_API_KEY switches Claude Code to API-key mode; the proxy
+    // does not need it for inference, so it never reaches the child.
+    assert.equal(child.apiKey, null);
     assert.equal(child.authToken, null);
     assert.equal(child.baseUrl, `http://localhost:${server.port}`);
     assert.equal(child.disableGrowthbook, null);

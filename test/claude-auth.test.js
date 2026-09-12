@@ -33,12 +33,14 @@ test('buildClaudeRecoveryEnv replaces higher-precedence auth only for loopback U
     assert.equal(result.ANTHROPIC_BASE_URL, baseUrl);
     assert.equal(result.PRESERVED, 'yes');
     assert.equal('ANTHROPIC_API_KEY' in result, false);
-    assert.equal('ANTHROPIC_AUTH_TOKEN' in result, false);
-    assert.equal(typeof result.CLAUDE_CODE_OAUTH_TOKEN, 'string');
-    assert.ok(result.CLAUDE_CODE_OAUTH_TOKEN.length > 0);
+    // The marker rides ANTHROPIC_AUTH_TOKEN (a bearer the proxy reads), never
+    // CLAUDE_CODE_OAUTH_TOKEN, which Claude Code would treat as its login.
+    assert.equal('CLAUDE_CODE_OAUTH_TOKEN' in result, false);
+    assert.equal(typeof result.ANTHROPIC_AUTH_TOKEN, 'string');
+    assert.ok(result.ANTHROPIC_AUTH_TOKEN.length > 0);
     assert.notEqual(
-      result.CLAUDE_CODE_OAUTH_TOKEN,
-      input.CLAUDE_CODE_OAUTH_TOKEN,
+      result.ANTHROPIC_AUTH_TOKEN,
+      input.ANTHROPIC_AUTH_TOKEN,
     );
   }
 });
@@ -79,7 +81,7 @@ test('recovery auth carries only the selected account routing hint', () => {
   }, 'uuid-b');
 
   assert.equal(
-    parseClaudeRecoveryAccount(`Bearer ${result.CLAUDE_CODE_OAUTH_TOKEN}`),
+    parseClaudeRecoveryAccount(`Bearer ${result.ANTHROPIC_AUTH_TOKEN}`),
     'uuid-b',
   );
   for (const authorization of [
@@ -190,7 +192,7 @@ if (process.env.TEAMCLAUDE_REAL_CLAUDE_QA === '1') {
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`,
     }, 'account-b');
     delete env.CLAUDE_CONFIG_DIR;
-    expectedAuthorization = `Bearer ${env.CLAUDE_CODE_OAUTH_TOKEN}`;
+    expectedAuthorization = `Bearer ${env.ANTHROPIC_AUTH_TOKEN}`;
     child = spawn('claude', ['-p', 'reply with ok', '--output-format', 'json'], {
       env,
       stdio: 'ignore',

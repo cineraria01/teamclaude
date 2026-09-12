@@ -46,8 +46,13 @@ export function buildClaudeRecoveryEnv(baseEnv, accountUuid) {
 
   const recoveryEnv = { ...baseEnv };
   delete recoveryEnv.ANTHROPIC_API_KEY;
-  delete recoveryEnv.ANTHROPIC_AUTH_TOKEN;
+  delete recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN;
   const encodedAccount = Buffer.from(accountUuid, 'utf8').toString('base64url');
-  recoveryEnv.CLAUDE_CODE_OAUTH_TOKEN = RECOVERY_OAUTH_PREFIX + encodedAccount;
+  // This is a local proxy routing marker, not an Anthropic OAuth credential.
+  // Presented as CLAUDE_CODE_OAUTH_TOKEN, Claude Code treats it as its login:
+  // it disables the claude.ai connectors and gates Fable tool continuations on
+  // local credits. As a bearer auth token it only reaches the proxy's
+  // Authorization header, which is all the routing hint needs.
+  recoveryEnv.ANTHROPIC_AUTH_TOKEN = RECOVERY_OAUTH_PREFIX + encodedAccount;
   return recoveryEnv;
 }
