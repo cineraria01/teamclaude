@@ -33,9 +33,9 @@ async function fixture(t, respond, count = 3) {
       await new Promise(resolve => server.close(resolve));
     }
   });
-  const send = () => fetch(`http://127.0.0.1:${proxy.address().port}/codex/responses`, {
+  const send = (extra = {}) => fetch(`http://127.0.0.1:${proxy.address().port}/codex/responses`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-6-astra', input: [], stream: true }),
+    body: JSON.stringify({ model: 'gpt-6-astra', input: [], stream: true, ...extra }),
     signal: AbortSignal.timeout(3000),
   });
   return { requests, manager, send };
@@ -158,5 +158,58 @@ test('unknown bookkeeping frames before real output are relayed intact once outp
     res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(body);
   }, 2);
   assert.equal(await (await send()).text(), body);
+  assert.equal(requests.length, 1);
+});
+
+// response.created / response.in_progress echo the request's instructions and
+// tools, so a real Codex turn (MCP tool schemas) pushed the held prefix past the
+// fixed 64 KiB cap before the overload frame. The probe was abandoned ("probe
+// released by prefix over 64 KiB") and the rejection leaked to the CLI instead
+// of being replayed on the idle account (2026-09-11 04:07 live failure).
+const bigInstructions = '지시 instructions '.repeat(3 * 1024); // ~66 KB UTF-8, multi-byte
+const echoFrame = type => frame({ type, response: { output: [], usage: null, instructions: bigInstructions, tools: [] } });
+const capacityError = frame({ type: 'error', code: 'slow_down', message: 'Selected model is at capacity. Please try a different model.' });
+
+test('overload after echo frames larger than 64 KiB still switches accounts', async t => {
+  const rejected = echoFrame('response.created') + echoFrame('response.in_progress') + capacityError;
+  const { requests, send } = await fixture(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(req.headers['chatgpt-account-id'] === '0' ? rejected : success);
+  }, 2);
+  assert.equal(await (await send({ instructions: bigInstructions })).text(), success);
+  assert.deepEqual(requests.map(r => r.account), ['0', '1']);
+});
+
+test('large echo frames split across chunks mid-character are relayed intact once output starts', async t => {
+  const bytes = Buffer.from(echoFrame('response.created') + echoFrame('response.in_progress')
+    + frame({ type: 'response.output_text.delta', delta: '출력' })
+    + frame({ type: 'response.completed', response: { output: [{ type: 'message' }], usage: { output_tokens: 1 } } }));
+  const { requests, send } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    let offset = 0;
+    const step = () => {
+      if (offset >= bytes.length) return res.end();
+      const end = Math.min(bytes.length, offset + 7 * 1024 + 1); // odd size: splits multi-byte chars
+      res.write(bytes.subarray(offset, end));
+      offset = end;
+      setImmediate(step);
+    };
+    step();
+  });
+  const received = Buffer.from(await (await send({ instructions: bigInstructions })).arrayBuffer());
+  assert.equal(received.equals(bytes), true);
+  assert.equal(requests.length, 1);
+});
+
+test('an echo prefix beyond the request-sized budget is abandoned and relayed verbatim without hanging', async t => {
+  // Abandon keeps the stream alive; a >1 MiB single frame also exceeds the
+  // usage buffer's partial-event cap, so late detection is best-effort here.
+  const huge = 'x'.repeat(1200 * 1024); // > 1 MiB floor, request itself is tiny
+  const bytes = frame({ type: 'response.created', response: { output: [], instructions: huge } }) + capacityError;
+  const { requests, send } = await fixture(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(bytes);
+  });
+  assert.equal(await (await send()).text(), bytes);
   assert.equal(requests.length, 1);
 });

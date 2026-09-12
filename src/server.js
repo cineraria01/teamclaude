@@ -196,6 +196,16 @@ function isCompletedCodexResponse(body) {
 const MODEL_EXHAUST_WAIT_PASSES = 10;
 const TRANSACTION_MEMORY_BYTES = 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+// Capacity-probe hold budget. response.created / response.in_progress echo the
+// request's instructions and tools verbatim, so a real Codex turn (MCP tool
+// schemas) passes 64 KiB before any output or rejection frame arrives. Size the
+// hold to the request — two echoes plus headroom, never below 1 MiB — instead
+// of a fixed cap that silently abandons the probe on every large session.
+const CAPACITY_PROBE_DEFAULT_MAX_BYTES = 64 * 1024;
+const CAPACITY_PROBE_MIN_BYTES = 1024 * 1024;
+const CAPACITY_PROBE_HEADROOM_BYTES = 256 * 1024;
+const capacityProbeBudget = requestBytes =>
+  Math.max(CAPACITY_PROBE_MIN_BYTES, requestBytes * 2 + CAPACITY_PROBE_HEADROOM_BYTES);
 const EMPTY_BYTES = Buffer.alloc(0);
 const SSE_EVENT_BOUNDARY = Buffer.from('\n\n');
 
@@ -3668,6 +3678,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
         parseStreamUsage,
         upstreamRes.headers.get('content-encoding'),
         capacityProbe,
+        capacityProbeBudget(body.length),
       );
       if (outcome.capacityRejected) {
         if (await retryCapacity()) return;
@@ -4020,31 +4031,39 @@ async function streamResponse(
   parseUsage = true,
   contentEncoding = null,
   capacityProbe = false,
+  capacityProbeMaxBytes = CAPACITY_PROBE_DEFAULT_MAX_BYTES,
 ) {
   const reader = webStream.getReader();
   let capacityPrefix = EMPTY_BYTES;
-  // ponytail: rescan only a 64 KiB prefix; use incremental parsing if this cap grows.
+  let capacityScanned = 0; // frame-aligned byte offset already classified
+  // Incremental: only frames completed since the last chunk are parsed, so a
+  // multi-MiB hold (large instructions/tools echo) stays linear.
   // Never hold or retry any response containing model output/tool events.
+  // The overload check runs before anything else: a rejection is a rejection
+  // even when its frame also reports usage. Unknown bookkeeping events keep the
+  // hold (nothing was relayed yet); capacityProbeMaxBytes bounds how long that lasts.
+  const passProbe = reason => { outcome.capacityProbePassedOn = reason; return 'pass'; };
   const classifyPrefix = bytes => {
-    const frames = bytes.toString('utf8').split(/\r?\n\r?\n/);
-    frames.pop(); // A partial last frame is not evidence of rejection.
+    const text = bytes.subarray(capacityScanned).toString('utf8');
+    const frames = text.split(/\r?\n\r?\n/);
+    const partial = frames.pop(); // A partial last frame is not evidence of rejection.
+    // Everything before the partial frame ends at an ASCII boundary, so its
+    // UTF-8 byte length is exact even when the chunk split a multi-byte char.
+    capacityScanned += Buffer.byteLength(text.slice(0, text.length - partial.length), 'utf8');
     for (const frame of frames) {
       const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
         .map(line => line.slice(5).trimStart()).join('\n');
       if (!data) continue;
       let event;
-      try { event = JSON.parse(data); } catch { return 'pass'; }
-      if (!event || typeof event !== 'object') return 'pass';
-      // The overload check runs first: a rejection is a rejection even when its
-      // frame also reports usage. Unknown bookkeeping events keep the hold
-      // (nothing was relayed yet); the 64 KiB cap bounds how long that lasts.
+      try { event = JSON.parse(data); } catch { return passProbe('unparsable frame'); }
+      if (!event || typeof event !== 'object') return passProbe('non-object frame');
       if (isOverloadEvent(event)) return 'capacity';
       const type = typeof event.type === 'string' ? event.type : '';
-      if (isCapacityTerminalEvent(type)) return 'pass';
+      if (isCapacityTerminalEvent(type)) return passProbe(type);
       const response = event.response;
-      if (response?.output?.length || response?.usage?.output_tokens > 0) return 'pass';
+      if (response?.output?.length || response?.usage?.output_tokens > 0) return passProbe(`${type || 'event'} with output`);
       if (isCapacityStructuralEvent(type, event)) continue;
-      if (isCapacityOutputEvent(type)) return 'pass';
+      if (isCapacityOutputEvent(type)) return passProbe(type);
       continue; // unknown bookkeeping event — no output yet, keep holding
     }
     return 'wait';
@@ -4305,7 +4324,7 @@ async function streamResponse(
 
       if (capacityProbe) {
         const size = capacityPrefix.length + step.value.length;
-        if (size <= 64 * 1024 && reserveAuxiliaryResponseBytes(size)) {
+        if (size <= capacityProbeMaxBytes && reserveAuxiliaryResponseBytes(size)) {
           const combined = Buffer.concat([capacityPrefix, step.value]);
           releaseAuxiliaryResponseBytes(capacityPrefix.length);
           capacityPrefix = combined;
@@ -4319,9 +4338,13 @@ async function streamResponse(
           step.value = capacityPrefix;
           capacityProbe = false;
         } else {
-          if (capacityPrefix.length && !await relayChunk(capacityPrefix)) break;
-          releaseAuxiliaryResponseBytes(capacityPrefix.length);
-          capacityPrefix = EMPTY_BYTES;
+          outcome.capacityProbeAbandoned = size > capacityProbeMaxBytes
+            ? `prefix over ${Math.ceil(capacityProbeMaxBytes / 1024)} KiB (${size} bytes)`
+            : 'response buffer budget exhausted';
+          // Hand the held bytes to the framer like the pass path does. Relaying
+          // them around the framer left it starting mid-frame (and mid-character
+          // for multi-byte text), after which the stream never reached its end.
+          step.value = capacityPrefix.length ? Buffer.concat([capacityPrefix, step.value]) : step.value;
           capacityProbe = false;
         }
       }
