@@ -960,10 +960,19 @@ export class AccountManager {
     }
 
     if (account.status === 'exhausted' || account.status === 'error') return false;
+    if (this._isCapacityCooling(account, model)) return false;
     if (this._isModelUnsupported(account, model)) return false;
     if (this._isNearQuota(account, model)) return false;
 
     return true;
+  }
+
+  _isCapacityCooling(account, model = null) {
+    if (!(account?.capacityCooldown instanceof Map)) return false;
+    const windows = model ? [account.capacityCooldown.get(model)] : account.capacityCooldown.values();
+    // An expired mark admits one real request; concurrent probes wait for it.
+    return [...windows].some(until => Number.isFinite(until)
+      && (until > Date.now() || account.inflight > 0));
   }
 
   _isModelUnsupported(account, model) {
@@ -1108,6 +1117,7 @@ export class AccountManager {
       // account, re-imported credentials, or `subscription <name> ok`.
       if (account.subscriptionDisabled === true) continue;
       if (account.errorReason === 'subscription-ended') continue;
+      if (this._isCapacityCooling(account, model)) continue;
       if (this._isModelUnsupported(account, model)) continue;
       if (this._isModelNearQuota(account, model)) continue;
       const resetTime = account.rateLimitedUntil
@@ -1983,6 +1993,7 @@ export class AccountManager {
     return account.enabled !== false
       && account.status === 'active'
       && !throttled
+      && !this._isCapacityCooling(account)
       && !this._isNearQuota(account);
   }
 
@@ -2024,13 +2035,20 @@ export class AccountManager {
         : null,
       unsupportedModels: [...a.unsupportedModels.keys()].filter(model =>
         this._isModelUnsupported(a, model)),
+      // Model-capacity marks set by the proxy (ms timestamps keyed by model).
+      capacityCooling: a.capacityCooldown instanceof Map
+        ? Object.fromEntries([...a.capacityCooldown].filter(([, until]) => until > Date.now()))
+        : {},
+      capacityRecovered: a.capacityRecovered instanceof Map
+        ? Object.fromEntries(a.capacityRecovered)
+        : {},
     }));
     return {
       ...(includeIdentity
-        ? { currentAccount: this.accounts[this.currentIndex]?.name }
+        ? { currentAccount: accounts[this.currentIndex]?.usable ? this.accounts[this.currentIndex]?.name : null }
         : {}),
       ...(includeIdentity
-        ? { currentAccountUuid: this.accounts[this.currentIndex]?.accountUuid || null }
+        ? { currentAccountUuid: accounts[this.currentIndex]?.usable ? this.accounts[this.currentIndex]?.accountUuid || null : null }
         : {}),
       switchThreshold: this.switchThreshold,
       usableCount: accounts.filter(a => a.usable).length,

@@ -60,6 +60,21 @@ export function displayWidth(value) {
 
 const vw = displayWidth;
 
+// Model-capacity state set by the proxy: cooling (parked after an overload
+// rejection, retried when the timer ends) or recently recovered.
+function capacityStatus(a) {
+  const now = Date.now();
+  let cooling = 0;
+  for (const until of a.capacityCooldown?.values?.() || []) {
+    if (Number.isFinite(until) && until > now) cooling = Math.max(cooling, until - now);
+  }
+  if (cooling > 0) return yellow(`cool ${Math.ceil(cooling / 60_000)}m`);
+  for (const at of a.capacityRecovered?.values?.() || []) {
+    if (Number.isFinite(at) && now - at < 600_000) return green('recovered');
+  }
+  return null;
+}
+
 function rpad(s, w) {
   const gap = w - vw(s);
   return gap > 0 ? s + ' '.repeat(gap) : s;
@@ -993,6 +1008,8 @@ export class TUI {
         status = yellow('sub due');
       } else if (subscription.state === 'cancellation-scheduled') {
         status = yellow('canceling');
+      } else if (capacityStatus(a)) {
+        status = capacityStatus(a);
       } else {
         switch (a.status) {
           case 'active':    status = isCur ? green('active') : 'active'; break;

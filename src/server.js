@@ -207,16 +207,18 @@ const CAPACITY_PROBE_HEADROOM_BYTES = 256 * 1024;
 const capacityProbeBudget = requestBytes =>
   Math.max(CAPACITY_PROBE_MIN_BYTES, requestBytes * 2 + CAPACITY_PROBE_HEADROOM_BYTES);
 const EMPTY_BYTES = Buffer.alloc(0);
-const SSE_EVENT_BOUNDARY = Buffer.from('\n\n');
+const LF = 0x0a;
+const CR = 0x0d;
 
 /**
  * Append `bytes` to the pending raw SSE buffer and split off every complete
- * event on the byte-level "\n\n" boundary. Returns the complete events (raw
- * bytes, boundary stripped) and the remaining incomplete tail — always a copy
- * for the tail so the concatenated chunk can be garbage-collected. Splitting
- * on bytes keeps this exact for any UTF-8 payload: the boundary is ASCII, so it
- * can never fall inside a multi-byte character (a text-level split cannot say
- * the same once a chunk ends mid-character).
+ * event on the byte-level blank-line boundary ("\n\n", or the CRLF form the
+ * Codex backend also emits — a CRLF-only overload frame must still be seen).
+ * Returns the complete events (raw bytes, boundary stripped) and the remaining
+ * incomplete tail — always a copy for the tail so the concatenated chunk can be
+ * garbage-collected. Splitting on bytes keeps this exact for any UTF-8 payload:
+ * the boundary is ASCII, so it can never fall inside a multi-byte character (a
+ * text-level split cannot say the same once a chunk ends mid-character).
  */
 function splitSseEvents(pending, bytes) {
   const joined = pending.length === 0
@@ -224,13 +226,15 @@ function splitSseEvents(pending, bytes) {
     : Buffer.concat([pending, bytes]);
   const events = [];
   let start = 0;
-  for (
-    let idx = joined.indexOf(SSE_EVENT_BOUNDARY, start);
-    idx !== -1;
-    idx = joined.indexOf(SSE_EVENT_BOUNDARY, start)
-  ) {
-    events.push(joined.subarray(start, idx));
-    start = idx + SSE_EVENT_BOUNDARY.length;
+  let scan = 0;
+  for (let idx = joined.indexOf(LF, scan); idx !== -1; idx = joined.indexOf(LF, scan)) {
+    let end = idx + 1;
+    if (joined[end] === CR) end++;
+    if (joined[end] !== LF) { scan = idx + 1; continue; }
+    const eventEnd = idx > start && joined[idx - 1] === CR ? idx - 1 : idx;
+    events.push(joined.subarray(start, eventEnd));
+    start = end + 1;
+    scan = start;
   }
   const rest = start === joined.length ? EMPTY_BYTES : Buffer.from(joined.subarray(start));
   return { events, rest };
@@ -253,6 +257,31 @@ const AUTH_401_CASCADE_THRESHOLD = 2;
 // persisted; it only has to be unique among live parks.
 let authParkSeq = 0;
 
+// Per account+model memory of a Codex capacity rejection. Selection steers a
+// request away from a cooling account until its deadline, so the client's own
+// retry of a mid-stream overload lands elsewhere. After the cooldown the next
+// real request probes the account again: success clears the mark
+// ("recovered"), another rejection renews it.
+const CAPACITY_COOLDOWN_MS = (() => {
+  const n = Number.parseInt(process.env.TEAMCODEX_CAPACITY_COOLDOWN_MS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 600_000;
+})();
+function noteCapacityRejection(account, model) {
+  if (!account || typeof model !== 'string' || !model) return;
+  if (!(account.capacityCooldown instanceof Map)) account.capacityCooldown = new Map();
+  account.capacityCooldown.set(model, Date.now() + CAPACITY_COOLDOWN_MS);
+  account.capacityRecovered?.delete(model);
+}
+// True once when a previously rejected account completes a response for the model.
+function markCapacityRecovered(account, model, dispatchedAt) {
+  if (!(account?.capacityCooldown instanceof Map) || !account.capacityCooldown.has(model)) return false;
+  // A response already in flight before rejection cannot cancel the cooldown.
+  if (dispatchedAt < account.capacityCooldown.get(model)) return false;
+  account.capacityCooldown.delete(model);
+  if (!(account.capacityRecovered instanceof Map)) account.capacityRecovered = new Map();
+  account.capacityRecovered.set(model, Date.now());
+  return true;
+}
 // Codex overload rejection codes. The CLI maps both to "Selected model is at
 // capacity"; the code may sit at the event root, under `error`, or under
 // `response.error` (response.failed).
@@ -260,6 +289,16 @@ const isOverloadCode = code => code === 'server_is_overloaded' || code === 'slow
 function isOverloadEvent(event) {
   return (event.type === 'error' && (isOverloadCode(event.code) || isOverloadCode(event.error?.code)))
     || (event.type === 'response.failed' && isOverloadCode(event.response?.error?.code));
+}
+// True for a complete SSE frame (text) whose event is a Codex overload rejection.
+function isOverloadFrame(frame) {
+  if (!/server_is_overloaded|slow_down/.test(frame)) return false;
+  const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trimStart()).join('\n');
+  if (!data) return false;
+  let event;
+  try { event = JSON.parse(data); } catch { return false; }
+  return Boolean(event) && typeof event === 'object' && isOverloadEvent(event);
 }
 // Capacity-probe vocabulary. While the probe holds a Responses stream nothing
 // has reached the client, so any structural event may still be followed by an
@@ -2885,6 +2924,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     const upstreamRes = await upstreamRequest;
     const retryCapacity = async () => {
       ctx.triedCapacity.add(account);
+      noteCapacityRejection(account, ctx.model);
       if (res.destroyed || ctx.abortSignal?.aborted || retryCount >= maxRetries
           || !(hasUsable(ctx.triedCapacity) || hasCapped(ctx.triedCapacity))) return false;
       console.log(`[TeamCodex] Model capacity rejected on "${account.name}" — trying another account for ${ctx.model}`);
@@ -3655,10 +3695,11 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       const ensureHeaders = () => {
         if (!res.headersSent) res.writeHead(upstreamRes.status, responseHeaders);
       };
+      const capacityAlternative = hasUsable(new Set([...ctx.triedCapacity, account]))
+        || hasCapped(new Set([...ctx.triedCapacity, account]));
       const capacityProbe = ctx.provider === 'codex' && method === 'POST'
         && isCodexResponsesPath(req.url) && parseStreamUsage && retryCount < maxRetries
-        && (hasUsable(new Set([...ctx.triedCapacity, account]))
-          || hasCapped(new Set([...ctx.triedCapacity, account])));
+        && capacityAlternative;
       if (!ctx.streamRecovery && !capacityProbe) ensureHeaders(); // legacy: headers first
       const outcome = await streamResponse(
         upstreamRes.body,
@@ -3680,6 +3721,17 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
         capacityProbe,
         capacityProbeBudget(body.length),
       );
+      if (outcome.capacityLate) {
+        noteCapacityRejection(account, ctx.model);
+        // Say why this rejection could not be replayed, so a repeat is diagnosable
+        // from the proxy log alone.
+        const why = capacityProbe
+          ? `probe released by ${outcome.capacityProbePassedOn || outcome.capacityProbeAbandoned || 'unknown frame'}`
+          : `probe off: ${!parseStreamUsage ? 'encoded stream'
+            : retryCount >= maxRetries ? 'retry budget spent'
+              : !capacityAlternative ? 'no alternative account' : 'not a Responses POST'}`;
+        console.log(`[TeamCodex] Model capacity rejected mid-stream on "${account.name}" (${why}) — steering ${ctx.model} away from it for ${CAPACITY_COOLDOWN_MS / 1000}s`);
+      }
       if (outcome.capacityRejected) {
         if (await retryCapacity()) return;
         ensureHeaders();
@@ -3782,6 +3834,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       if (ctx.provider === 'codex' && isCodexInferenceRequest(req)
           && upstreamRes.status >= 200 && upstreamRes.status < 300
           && outcome.responseCompleted) {
+        if (markCapacityRecovered(account, ctx.model, dispatchedAt)) {
+          console.log(`[TeamCodex] "${account.name}" is serving ${ctx.model} again — capacity recovered`);
+        }
         accountManager.markAccountSuccess(account);
         await accountManager.waitForAccountFlag(account).catch(err => {
           console.error(`[TeamClaude] Failed to persist subscription recovery for "${account.name}": ${err.message}`);
@@ -4162,7 +4217,9 @@ async function streamResponse(
           usageBufferDisabled = true;
         }
         for (const event of events) {
-          parseSSEUsage(event.toString('utf8'), account, accountManager);
+          const text = event.toString('utf8');
+          parseSSEUsage(text, account, accountManager);
+          if (!outcome.capacityLate && isOverloadFrame(text)) outcome.capacityLate = true;
         }
       }
     }
