@@ -3527,8 +3527,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     if (RETRYABLE_STATUS.has(upstreamRes.status)) {
       const code = upstreamRes.status;
       // A structured capacity rejection is safe to retry; generic 5xx is not.
+      // Upstream may omit content-type; Codex itself classifies by parsing the body.
       if (ctx.provider === 'codex' && code === 503 && method === 'POST'
-          && isCodexResponsesPath(req.url) && contentType?.includes('application/json')) {
+          && isCodexResponsesPath(req.url) && (!contentType || contentType.includes('application/json'))) {
         const rejectedBody = await readBodyBounded(upstreamRes.body, ctx.maxResponseBytes,
           ctx.reserveResponseBytes, ctx.releaseReservedResponseBytes);
         let rejected;

@@ -88,6 +88,20 @@ for (const responseBody of [success + capacity, frame({ type: 'error', error: { 
   });
 }
 
+test('HTTP 503 capacity rejection without Content-Type still switches accounts', async t => {
+  const { requests, send } = await fixture(t, (req, res) => {
+    if (req.headers['chatgpt-account-id'] === '0') {
+      res.writeHead(503);
+      res.end('{"error":{"code":"server_is_overloaded"}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(success);
+    }
+  }, 2);
+  assert.equal(await (await send()).text(), success);
+  assert.deepEqual(requests.map(r => r.account), ['0', '1']);
+});
+
 test('generic HTTP 503 is not replayed as a capacity rejection', async t => {
   const { requests, send } = await fixture(t, (_req, res) => {
     res.writeHead(503, { 'content-type': 'application/json' }); res.end('{"error":{"code":"internal_error"}}');
