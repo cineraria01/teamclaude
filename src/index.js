@@ -2708,7 +2708,6 @@ async function runCommand(clientArgsOverride = null) {
       console.error(`[TeamCodex] ${err.message}`);
       process.exit(1);
     }
-    if (codexRouter) childEnv.TEAMCODEX_ROUTER_KEY = codexRouter.callerKey;
     const launchCodex = launchArgs => spawnSync(
       codexBin,
       buildCodexProxyArgs(config.proxy.port, launchArgs, { routerBaseUrl: codexRouter?.baseUrl ?? null }),

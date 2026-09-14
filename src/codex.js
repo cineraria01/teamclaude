@@ -246,15 +246,23 @@ const DEFAULT_CODEX_ROUTER_CALLER_KEY_FILE = join(homedir(), '.codex', 'codex-ro
  *                    "callerKeyFile": "~/.codex/codex-router/caller-secret" }
  *
  * Codex authenticates to the router with the router's own caller key (its
- * `caller-secret` file), never with the ChatGPT session: the router only
- * accepts a session token that matches the one CODEX_HOME it was installed
- * for, and a Codex launched from another CODEX_HOME (an Orca account, a
- * throwaway login) would get a 401. Only loopback http origins are accepted,
- * because the launched Codex sends that key to whatever this returns. The
- * router forwards native GPT turns back to this proxy (CODEX_NATIVE_BASE_URL)
- * without a credential, and the pool injects its account exactly as before.
+ * `caller-secret` file) carried in the base_url path
+ * (`/_codex-router/<key>/v1`, the same capability form as `codex-router panel`),
+ * never with the ChatGPT session: the router only accepts a session token that
+ * matches the one CODEX_HOME it was installed for, so a Codex launched from
+ * another CODEX_HOME (an Orca account, a throwaway login) gets a 401. A bearer
+ * via `env_key` is not enough either — a ChatGPT-signed-in Codex still sends
+ * its own session token for native GPT models (measured: external models
+ * passed, gpt-* got the same 401). With the key in the path the router admits
+ * the request whatever bearer Codex adds, relays that bearer to this proxy,
+ * and the pool strips it and injects its account exactly as before.
  *
- * Returns null when off, else { baseUrl, callerKey }.
+ * Only loopback http origins are accepted, because the launched Codex sends
+ * that key to whatever this returns. The key also appears in the child's argv
+ * (`ps`), which is the same exposure as the panel URL — single-user machines.
+ *
+ * Returns null when off, else { baseUrl, callerKey } where baseUrl already
+ * embeds the key.
  */
 export function resolveCodexRouter(config, env = process.env, readSecret = readCodexRouterCallerSecret) {
   const fromEnv = env.TEAMCODEX_CODEX_ROUTER_URL;
@@ -279,9 +287,8 @@ export function resolveCodexRouter(config, env = process.env, readSecret = readC
   if (url.protocol !== 'http:' || !loopback || url.username || url.password) {
     throw new Error(`codexRouter.baseUrl must be a loopback http:// origin: ${candidate}`);
   }
-  const baseUrl = url.toString().replace(/\/+$/, '');
   const presetKey = typeof env.TEAMCODEX_ROUTER_KEY === 'string' ? env.TEAMCODEX_ROUTER_KEY.trim() : '';
-  if (presetKey) return { baseUrl, callerKey: presetKey };
+  if (presetKey) return { baseUrl: codexRouterCallerBaseUrl(url, presetKey), callerKey: presetKey };
   const keyFile = typeof router === 'object' && router !== null && typeof router.callerKeyFile === 'string'
     ? router.callerKeyFile.replace(/^~(?=\/|$)/, homedir())
     : DEFAULT_CODEX_ROUTER_CALLER_KEY_FILE;
@@ -292,7 +299,13 @@ export function resolveCodexRouter(config, env = process.env, readSecret = readC
       + 'Set codexRouter.callerKeyFile, TEAMCODEX_ROUTER_KEY, or turn codexRouter off.',
     );
   }
-  return { baseUrl, callerKey };
+  return { baseUrl: codexRouterCallerBaseUrl(url, callerKey), callerKey };
+}
+
+// http://127.0.0.1:4202/v1 + key -> http://127.0.0.1:4202/_codex-router/<key>/v1
+function codexRouterCallerBaseUrl(url, callerKey) {
+  const path = url.pathname.replace(/\/+$/, '');
+  return `${url.origin}/_codex-router/${encodeURIComponent(callerKey)}${path}`;
 }
 
 function readCodexRouterCallerSecret(path) {
@@ -311,11 +324,9 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
   // revoked local grant block `codex run` with the sign-in screen while the
   // pool is healthy (2026-08-03 incident).
   //
-  // Router mode keeps requires_openai_auth = false for the same reason and
-  // authenticates to codex-router with its caller key instead (env_key; the
-  // launcher puts the key in TEAMCODEX_ROUTER_KEY). The router forwards native
-  // GPT turns back to this proxy without a credential, so the pool still
-  // injects its own account.
+  // Router mode keeps requires_openai_auth = false for the same reason; the
+  // router's caller key rides in the base_url path (see resolveCodexRouter), so
+  // whatever bearer Codex adds is relayed to this proxy and replaced as usual.
   const provider = [
     routerBaseUrl ? 'name = "TeamCodex via Codex Router"' : 'name = "TeamCodex"',
     routerBaseUrl
@@ -323,7 +334,6 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
       : `base_url = "http://127.0.0.1:${port}/codex"`,
     'wire_api = "responses"',
     'requires_openai_auth = false',
-    ...(routerBaseUrl ? ['env_key = "TEAMCODEX_ROUTER_KEY"'] : []),
     'supports_websockets = false',
     'env_http_headers = { "X-TeamCodex-Invocation" = "TEAMCODEX_INVOCATION_ID" }',
   ].join(', ');

@@ -194,41 +194,46 @@ test('codexCliNotFoundMessage names the resolved binary and the override source'
   );
 });
 
-test('buildCodexProxyArgs router mode points Codex at codex-router and signs in with the caller key', () => {
+test('buildCodexProxyArgs router mode points Codex at the router capability URL, login-free', () => {
   // Given
   const userArgs = ['exec', 'say hello'];
+  const routerBaseUrl = 'http://127.0.0.1:4202/_codex-router/caller-key/v1';
 
   // When
-  const args = buildCodexProxyArgs(4567, userArgs, { routerBaseUrl: 'http://127.0.0.1:4202/v1' });
+  const args = buildCodexProxyArgs(4567, userArgs, { routerBaseUrl });
 
   // Then: same provider id, so nothing else about the launch changes
   assert.deepEqual(args.slice(-2), userArgs);
   assert.equal(args[1], 'model_provider="teamcodex_proxy"');
-  assert.match(args[3], /base_url = "http:\/\/127\.0\.0\.1:4202\/v1"/);
+  assert.match(args[3], /base_url = "http:\/\/127\.0\.0\.1:4202\/_codex-router\/caller-key\/v1"/);
   assert.doesNotMatch(args[3], /4567\/codex/);
-  // The ChatGPT login is never the router credential: a Codex launched from
-  // another CODEX_HOME would not match the router's session and get a 401.
+  // Never the ChatGPT login and never an env_key bearer: the router ignores
+  // the bearer once the capability is in the path, and a signed-in Codex sends
+  // its own session token for native GPT models regardless of env_key.
   assert.match(args[3], /requires_openai_auth = false/);
-  assert.match(args[3], /env_key = "TEAMCODEX_ROUTER_KEY"/);
+  assert.doesNotMatch(args[3], /env_key/);
   assert.match(args[3], /X-TeamCodex-Invocation/);
 
   // And: the plain pool launch is unchanged
-  assert.doesNotMatch(buildCodexProxyArgs(4567, userArgs)[3], /env_key/);
+  assert.match(buildCodexProxyArgs(4567, userArgs)[3], /base_url = "http:\/\/127\.0\.0\.1:4567\/codex"/);
 });
 
-test('resolveCodexRouter is off by default and honours config, env, the loopback rule, and the key file', () => {
+test('resolveCodexRouter is off by default and embeds the caller key from config, env, or file', () => {
   const key = () => 'caller-key-from-file';
 
   // Given: nothing configured
   assert.equal(resolveCodexRouter({}, {}, key), null);
   assert.equal(resolveCodexRouter({ codexRouter: { enabled: false, baseUrl: 'http://127.0.0.1:4202/v1' } }, {}, key), null);
 
-  // Given: config on — the key comes from the router's caller-secret file
+  // Given: config on — the key comes from the router's caller-secret file and lands in the path
   assert.deepEqual(
     resolveCodexRouter({ codexRouter: { enabled: true, baseUrl: 'http://127.0.0.1:4202/v1/' } }, {}, key),
-    { baseUrl: 'http://127.0.0.1:4202/v1', callerKey: 'caller-key-from-file' },
+    { baseUrl: 'http://127.0.0.1:4202/_codex-router/caller-key-from-file/v1', callerKey: 'caller-key-from-file' },
   );
-  assert.equal(resolveCodexRouter({ codexRouter: 'http://localhost:4202/v1' }, {}, key).baseUrl, 'http://localhost:4202/v1');
+  assert.equal(
+    resolveCodexRouter({ codexRouter: 'http://localhost:4202/v1' }, {}, key).baseUrl,
+    'http://localhost:4202/_codex-router/caller-key-from-file/v1',
+  );
 
   // Given: an explicit key file path, with ~ expanded
   const seen = [];
@@ -243,8 +248,8 @@ test('resolveCodexRouter is off by default and honours config, env, the loopback
 
   // Given: a key already in the environment wins over the file
   assert.equal(
-    resolveCodexRouter({ codexRouter: 'http://127.0.0.1:4202/v1' }, { TEAMCODEX_ROUTER_KEY: 'from-env' }, () => { throw new Error('must not read'); }).callerKey,
-    'from-env',
+    resolveCodexRouter({ codexRouter: 'http://127.0.0.1:4202/v1' }, { TEAMCODEX_ROUTER_KEY: 'from-env' }, () => { throw new Error('must not read'); }).baseUrl,
+    'http://127.0.0.1:4202/_codex-router/from-env/v1',
   );
 
   // Given: env URL wins over config, and "off" disables
@@ -254,7 +259,7 @@ test('resolveCodexRouter is off by default and honours config, env, the loopback
   );
   assert.equal(
     resolveCodexRouter({}, { TEAMCODEX_CODEX_ROUTER_URL: 'http://127.0.0.1:9999/v1' }, key).baseUrl,
-    'http://127.0.0.1:9999/v1',
+    'http://127.0.0.1:9999/_codex-router/caller-key-from-file/v1',
   );
 
   // Given: a missing key file is a loud failure, not a silent 401 later
