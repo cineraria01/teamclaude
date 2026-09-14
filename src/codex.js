@@ -236,17 +236,61 @@ export async function loginCodexCredentials({
   }
 }
 
-export function buildCodexProxyArgs(port, userArgs) {
+/**
+ * Where Codex traffic should go when a local codex-router sits in front of this
+ * pool. Off unless `codexRouter` is configured (or TEAMCODEX_CODEX_ROUTER_URL is
+ * set); only loopback HTTP origins are accepted, because the launched Codex
+ * sends its ChatGPT bearer to whatever this returns.
+ *
+ *   "codexRouter": { "enabled": true, "baseUrl": "http://127.0.0.1:4202/v1" }
+ *
+ * The router then forwards native GPT turns back to this proxy (its
+ * CODEX_NATIVE_BASE_URL) and external models to their providers.
+ */
+export function resolveCodexRouterBaseUrl(config, env = process.env) {
+  const fromEnv = env.TEAMCODEX_CODEX_ROUTER_URL;
+  let candidate;
+  if (typeof fromEnv === 'string') {
+    if (fromEnv.trim() === '' || fromEnv.trim().toLowerCase() === 'off') return null;
+    candidate = fromEnv.trim();
+  } else {
+    const router = config?.codexRouter;
+    if (!router) return null;
+    if (typeof router === 'string') candidate = router;
+    else if (router.enabled === false || typeof router.baseUrl !== 'string') return null;
+    else candidate = router.baseUrl;
+  }
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new Error(`codexRouter.baseUrl is not a valid URL: ${candidate}`);
+  }
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+  if (url.protocol !== 'http:' || !loopback || url.username || url.password) {
+    throw new Error(`codexRouter.baseUrl must be a loopback http:// origin: ${candidate}`);
+  }
+  return url.toString().replace(/\/+$/, '');
+}
+
+export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {}) {
   // requires_openai_auth stays false: the proxy strips the client's
   // authorization/chatgpt-account-id and injects the pool account's, so a
   // local ~/.codex login adds nothing upstream — but requiring it lets a
   // revoked local grant block `codex run` with the sign-in screen while the
   // pool is healthy (2026-08-03 incident).
+  //
+  // Router mode flips both: Codex talks to codex-router, which only accepts a
+  // ChatGPT bearer as its session credential, and current Codex builds only
+  // admit a non-native model id (`opencode-go/...`) when the selected provider
+  // requires OpenAI auth. The router hands native GPT turns back to this proxy.
   const provider = [
-    'name = "TeamCodex"',
-    `base_url = "http://127.0.0.1:${port}/codex"`,
+    routerBaseUrl ? 'name = "TeamCodex via Codex Router"' : 'name = "TeamCodex"',
+    routerBaseUrl
+      ? `base_url = "${routerBaseUrl}"`
+      : `base_url = "http://127.0.0.1:${port}/codex"`,
     'wire_api = "responses"',
-    'requires_openai_auth = false',
+    routerBaseUrl ? 'requires_openai_auth = true' : 'requires_openai_auth = false',
     'supports_websockets = false',
     'env_http_headers = { "X-TeamCodex-Invocation" = "TEAMCODEX_INVOCATION_ID" }',
   ].join(', ');

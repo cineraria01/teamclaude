@@ -14,6 +14,7 @@ import { importCredentials, loginOAuth, fetchProfile, refreshAccessToken, isToke
 import {
   assertSafeCodexArgs,
   buildCodexProxyArgs,
+  resolveCodexRouterBaseUrl,
   codexCliNotFoundMessage,
   importCodexCredentials,
   loginCodexCredentials,
@@ -2700,9 +2701,10 @@ async function runCommand(clientArgsOverride = null) {
         baselineTrusted = false;
       }
     }
+    const routerBaseUrl = resolveCodexRouterBaseUrl(config, childEnv);
     const launchCodex = launchArgs => spawnSync(
       codexBin,
-      buildCodexProxyArgs(config.proxy.port, launchArgs),
+      buildCodexProxyArgs(config.proxy.port, launchArgs, { routerBaseUrl }),
       { stdio: 'inherit', env: childEnv },
     );
     let result = launchCodex(clientArgs);

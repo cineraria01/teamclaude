@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import {
   buildCodexProxyArgs,
+  resolveCodexRouterBaseUrl,
   codexCliNotFoundMessage,
   importCodexCredentials,
   refreshCodexAccessToken,
@@ -191,4 +192,48 @@ test('codexCliNotFoundMessage names the resolved binary and the override source'
     codexCliNotFoundMessage('/nodes/v24/bin/codex', {}),
     'Codex CLI not found at /nodes/v24/bin/codex. Install it first.',
   );
+});
+
+test('buildCodexProxyArgs router mode points Codex at codex-router and requires OpenAI auth', () => {
+  // Given
+  const userArgs = ['exec', 'say hello'];
+
+  // When
+  const args = buildCodexProxyArgs(4567, userArgs, { routerBaseUrl: 'http://127.0.0.1:4202/v1' });
+
+  // Then: same provider id, so nothing else about the launch changes
+  assert.deepEqual(args.slice(-2), userArgs);
+  assert.equal(args[1], 'model_provider="teamcodex_proxy"');
+  assert.match(args[3], /base_url = "http:\/\/127\.0\.0\.1:4202\/v1"/);
+  assert.doesNotMatch(args[3], /4567\/codex/);
+  assert.match(args[3], /requires_openai_auth = true/);
+  assert.match(args[3], /X-TeamCodex-Invocation/);
+});
+
+test('resolveCodexRouterBaseUrl is off by default and honours config, env, and the loopback rule', () => {
+  // Given: nothing configured
+  assert.equal(resolveCodexRouterBaseUrl({}, {}), null);
+  assert.equal(resolveCodexRouterBaseUrl({ codexRouter: { enabled: false, baseUrl: 'http://127.0.0.1:4202/v1' } }, {}), null);
+
+  // Given: config on
+  assert.equal(
+    resolveCodexRouterBaseUrl({ codexRouter: { enabled: true, baseUrl: 'http://127.0.0.1:4202/v1/' } }, {}),
+    'http://127.0.0.1:4202/v1',
+  );
+  assert.equal(resolveCodexRouterBaseUrl({ codexRouter: 'http://localhost:4202/v1' }, {}), 'http://localhost:4202/v1');
+
+  // Given: env wins over config, and "off" disables
+  assert.equal(
+    resolveCodexRouterBaseUrl({ codexRouter: { baseUrl: 'http://127.0.0.1:4202/v1' } }, { TEAMCODEX_CODEX_ROUTER_URL: 'off' }),
+    null,
+  );
+  assert.equal(
+    resolveCodexRouterBaseUrl({}, { TEAMCODEX_CODEX_ROUTER_URL: 'http://127.0.0.1:9999/v1' }),
+    'http://127.0.0.1:9999/v1',
+  );
+
+  // Given: anything that would carry the ChatGPT bearer off-box is refused
+  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'https://example.com/v1' }, {}), /loopback/);
+  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'http://10.0.0.5:4202/v1' }, {}), /loopback/);
+  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'not a url' }, {}), /valid URL/);
 });
