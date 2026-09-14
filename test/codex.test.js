@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import http from 'node:http';
 import {
   buildCodexProxyArgs,
-  resolveCodexRouterBaseUrl,
+  resolveCodexRouter,
   codexCliNotFoundMessage,
   importCodexCredentials,
   refreshCodexAccessToken,
@@ -194,7 +194,7 @@ test('codexCliNotFoundMessage names the resolved binary and the override source'
   );
 });
 
-test('buildCodexProxyArgs router mode points Codex at codex-router and requires OpenAI auth', () => {
+test('buildCodexProxyArgs router mode points Codex at codex-router and signs in with the caller key', () => {
   // Given
   const userArgs = ['exec', 'say hello'];
 
@@ -206,34 +206,62 @@ test('buildCodexProxyArgs router mode points Codex at codex-router and requires 
   assert.equal(args[1], 'model_provider="teamcodex_proxy"');
   assert.match(args[3], /base_url = "http:\/\/127\.0\.0\.1:4202\/v1"/);
   assert.doesNotMatch(args[3], /4567\/codex/);
-  assert.match(args[3], /requires_openai_auth = true/);
+  // The ChatGPT login is never the router credential: a Codex launched from
+  // another CODEX_HOME would not match the router's session and get a 401.
+  assert.match(args[3], /requires_openai_auth = false/);
+  assert.match(args[3], /env_key = "TEAMCODEX_ROUTER_KEY"/);
   assert.match(args[3], /X-TeamCodex-Invocation/);
+
+  // And: the plain pool launch is unchanged
+  assert.doesNotMatch(buildCodexProxyArgs(4567, userArgs)[3], /env_key/);
 });
 
-test('resolveCodexRouterBaseUrl is off by default and honours config, env, and the loopback rule', () => {
+test('resolveCodexRouter is off by default and honours config, env, the loopback rule, and the key file', () => {
+  const key = () => 'caller-key-from-file';
+
   // Given: nothing configured
-  assert.equal(resolveCodexRouterBaseUrl({}, {}), null);
-  assert.equal(resolveCodexRouterBaseUrl({ codexRouter: { enabled: false, baseUrl: 'http://127.0.0.1:4202/v1' } }, {}), null);
+  assert.equal(resolveCodexRouter({}, {}, key), null);
+  assert.equal(resolveCodexRouter({ codexRouter: { enabled: false, baseUrl: 'http://127.0.0.1:4202/v1' } }, {}, key), null);
 
-  // Given: config on
-  assert.equal(
-    resolveCodexRouterBaseUrl({ codexRouter: { enabled: true, baseUrl: 'http://127.0.0.1:4202/v1/' } }, {}),
-    'http://127.0.0.1:4202/v1',
+  // Given: config on — the key comes from the router's caller-secret file
+  assert.deepEqual(
+    resolveCodexRouter({ codexRouter: { enabled: true, baseUrl: 'http://127.0.0.1:4202/v1/' } }, {}, key),
+    { baseUrl: 'http://127.0.0.1:4202/v1', callerKey: 'caller-key-from-file' },
   );
-  assert.equal(resolveCodexRouterBaseUrl({ codexRouter: 'http://localhost:4202/v1' }, {}), 'http://localhost:4202/v1');
+  assert.equal(resolveCodexRouter({ codexRouter: 'http://localhost:4202/v1' }, {}, key).baseUrl, 'http://localhost:4202/v1');
 
-  // Given: env wins over config, and "off" disables
+  // Given: an explicit key file path, with ~ expanded
+  const seen = [];
+  resolveCodexRouter(
+    { codexRouter: { baseUrl: 'http://127.0.0.1:4202/v1', callerKeyFile: '~/x/caller-secret' } },
+    {},
+    p => { seen.push(p); return 'k'; },
+  );
+  assert.equal(seen.length, 1);
+  assert.doesNotMatch(seen[0], /^~/);
+  assert.match(seen[0], /\/x\/caller-secret$/);
+
+  // Given: a key already in the environment wins over the file
   assert.equal(
-    resolveCodexRouterBaseUrl({ codexRouter: { baseUrl: 'http://127.0.0.1:4202/v1' } }, { TEAMCODEX_CODEX_ROUTER_URL: 'off' }),
+    resolveCodexRouter({ codexRouter: 'http://127.0.0.1:4202/v1' }, { TEAMCODEX_ROUTER_KEY: 'from-env' }, () => { throw new Error('must not read'); }).callerKey,
+    'from-env',
+  );
+
+  // Given: env URL wins over config, and "off" disables
+  assert.equal(
+    resolveCodexRouter({ codexRouter: { baseUrl: 'http://127.0.0.1:4202/v1' } }, { TEAMCODEX_CODEX_ROUTER_URL: 'off' }, key),
     null,
   );
   assert.equal(
-    resolveCodexRouterBaseUrl({}, { TEAMCODEX_CODEX_ROUTER_URL: 'http://127.0.0.1:9999/v1' }),
+    resolveCodexRouter({}, { TEAMCODEX_CODEX_ROUTER_URL: 'http://127.0.0.1:9999/v1' }, key).baseUrl,
     'http://127.0.0.1:9999/v1',
   );
 
-  // Given: anything that would carry the ChatGPT bearer off-box is refused
-  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'https://example.com/v1' }, {}), /loopback/);
-  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'http://10.0.0.5:4202/v1' }, {}), /loopback/);
-  assert.throws(() => resolveCodexRouterBaseUrl({ codexRouter: 'not a url' }, {}), /valid URL/);
+  // Given: a missing key file is a loud failure, not a silent 401 later
+  assert.throws(() => resolveCodexRouter({ codexRouter: 'http://127.0.0.1:4202/v1' }, {}, () => ''), /caller key not found/);
+
+  // Given: anything that would carry the key off-box is refused
+  assert.throws(() => resolveCodexRouter({ codexRouter: 'https://example.com/v1' }, {}, key), /loopback/);
+  assert.throws(() => resolveCodexRouter({ codexRouter: 'http://10.0.0.5:4202/v1' }, {}, key), /loopback/);
+  assert.throws(() => resolveCodexRouter({ codexRouter: 'not a url' }, {}, key), /valid URL/);
 });

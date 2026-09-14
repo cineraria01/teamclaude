@@ -14,7 +14,7 @@ import { importCredentials, loginOAuth, fetchProfile, refreshAccessToken, isToke
 import {
   assertSafeCodexArgs,
   buildCodexProxyArgs,
-  resolveCodexRouterBaseUrl,
+  resolveCodexRouter,
   codexCliNotFoundMessage,
   importCodexCredentials,
   loginCodexCredentials,
@@ -2701,10 +2701,17 @@ async function runCommand(clientArgsOverride = null) {
         baselineTrusted = false;
       }
     }
-    const routerBaseUrl = resolveCodexRouterBaseUrl(config, childEnv);
+    let codexRouter;
+    try {
+      codexRouter = resolveCodexRouter(config, childEnv);
+    } catch (err) {
+      console.error(`[TeamCodex] ${err.message}`);
+      process.exit(1);
+    }
+    if (codexRouter) childEnv.TEAMCODEX_ROUTER_KEY = codexRouter.callerKey;
     const launchCodex = launchArgs => spawnSync(
       codexBin,
-      buildCodexProxyArgs(config.proxy.port, launchArgs, { routerBaseUrl }),
+      buildCodexProxyArgs(config.proxy.port, launchArgs, { routerBaseUrl: codexRouter?.baseUrl ?? null }),
       { stdio: 'inherit', env: childEnv },
     );
     let result = launchCodex(clientArgs);

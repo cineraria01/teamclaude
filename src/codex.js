@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -236,25 +236,34 @@ export async function loginCodexCredentials({
   }
 }
 
+const DEFAULT_CODEX_ROUTER_CALLER_KEY_FILE = join(homedir(), '.codex', 'codex-router', 'caller-secret');
+
 /**
- * Where Codex traffic should go when a local codex-router sits in front of this
- * pool. Off unless `codexRouter` is configured (or TEAMCODEX_CODEX_ROUTER_URL is
- * set); only loopback HTTP origins are accepted, because the launched Codex
- * sends its ChatGPT bearer to whatever this returns.
+ * Optional local codex-router in front of this pool. Off unless `codexRouter`
+ * is configured (or TEAMCODEX_CODEX_ROUTER_URL is set):
  *
- *   "codexRouter": { "enabled": true, "baseUrl": "http://127.0.0.1:4202/v1" }
+ *   "codexRouter": { "enabled": true, "baseUrl": "http://127.0.0.1:4202/v1",
+ *                    "callerKeyFile": "~/.codex/codex-router/caller-secret" }
  *
- * The router then forwards native GPT turns back to this proxy (its
- * CODEX_NATIVE_BASE_URL) and external models to their providers.
+ * Codex authenticates to the router with the router's own caller key (its
+ * `caller-secret` file), never with the ChatGPT session: the router only
+ * accepts a session token that matches the one CODEX_HOME it was installed
+ * for, and a Codex launched from another CODEX_HOME (an Orca account, a
+ * throwaway login) would get a 401. Only loopback http origins are accepted,
+ * because the launched Codex sends that key to whatever this returns. The
+ * router forwards native GPT turns back to this proxy (CODEX_NATIVE_BASE_URL)
+ * without a credential, and the pool injects its account exactly as before.
+ *
+ * Returns null when off, else { baseUrl, callerKey }.
  */
-export function resolveCodexRouterBaseUrl(config, env = process.env) {
+export function resolveCodexRouter(config, env = process.env, readSecret = readCodexRouterCallerSecret) {
   const fromEnv = env.TEAMCODEX_CODEX_ROUTER_URL;
   let candidate;
+  const router = config?.codexRouter;
   if (typeof fromEnv === 'string') {
     if (fromEnv.trim() === '' || fromEnv.trim().toLowerCase() === 'off') return null;
     candidate = fromEnv.trim();
   } else {
-    const router = config?.codexRouter;
     if (!router) return null;
     if (typeof router === 'string') candidate = router;
     else if (router.enabled === false || typeof router.baseUrl !== 'string') return null;
@@ -270,7 +279,29 @@ export function resolveCodexRouterBaseUrl(config, env = process.env) {
   if (url.protocol !== 'http:' || !loopback || url.username || url.password) {
     throw new Error(`codexRouter.baseUrl must be a loopback http:// origin: ${candidate}`);
   }
-  return url.toString().replace(/\/+$/, '');
+  const baseUrl = url.toString().replace(/\/+$/, '');
+  const presetKey = typeof env.TEAMCODEX_ROUTER_KEY === 'string' ? env.TEAMCODEX_ROUTER_KEY.trim() : '';
+  if (presetKey) return { baseUrl, callerKey: presetKey };
+  const keyFile = typeof router === 'object' && router !== null && typeof router.callerKeyFile === 'string'
+    ? router.callerKeyFile.replace(/^~(?=\/|$)/, homedir())
+    : DEFAULT_CODEX_ROUTER_CALLER_KEY_FILE;
+  const callerKey = readSecret(keyFile);
+  if (!callerKey) {
+    throw new Error(
+      `codex-router caller key not found at ${keyFile}; is codex-router installed? `
+      + 'Set codexRouter.callerKeyFile, TEAMCODEX_ROUTER_KEY, or turn codexRouter off.',
+    );
+  }
+  return { baseUrl, callerKey };
+}
+
+function readCodexRouterCallerSecret(path) {
+  try {
+    return readFileSync(path, 'utf8').trim();
+  } catch (err) {
+    if (err?.code === 'ENOENT') return '';
+    throw err;
+  }
 }
 
 export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {}) {
@@ -280,17 +311,19 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
   // revoked local grant block `codex run` with the sign-in screen while the
   // pool is healthy (2026-08-03 incident).
   //
-  // Router mode flips both: Codex talks to codex-router, which only accepts a
-  // ChatGPT bearer as its session credential, and current Codex builds only
-  // admit a non-native model id (`opencode-go/...`) when the selected provider
-  // requires OpenAI auth. The router hands native GPT turns back to this proxy.
+  // Router mode keeps requires_openai_auth = false for the same reason and
+  // authenticates to codex-router with its caller key instead (env_key; the
+  // launcher puts the key in TEAMCODEX_ROUTER_KEY). The router forwards native
+  // GPT turns back to this proxy without a credential, so the pool still
+  // injects its own account.
   const provider = [
     routerBaseUrl ? 'name = "TeamCodex via Codex Router"' : 'name = "TeamCodex"',
     routerBaseUrl
       ? `base_url = "${routerBaseUrl}"`
       : `base_url = "http://127.0.0.1:${port}/codex"`,
     'wire_api = "responses"',
-    routerBaseUrl ? 'requires_openai_auth = true' : 'requires_openai_auth = false',
+    'requires_openai_auth = false',
+    ...(routerBaseUrl ? ['env_key = "TEAMCODEX_ROUTER_KEY"'] : []),
     'supports_websockets = false',
     'env_http_headers = { "X-TeamCodex-Invocation" = "TEAMCODEX_INVOCATION_ID" }',
   ].join(', ');
