@@ -37,6 +37,7 @@ import {
   withinCodexResetCreditGrace,
 } from './codex-reset-credits.js';
 import {
+  CODEX_ACTOR_AUTHORIZATION_HEADER,
   CODEX_INVOCATION_HEADER,
   CODEX_RECOVERY_SESSION_HEADER,
   codexRecoveryIdentity,
@@ -2914,6 +2915,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     if (lk === 'authorization') continue;
     if (lk === 'chatgpt-account-id') continue;
     if (lk === CODEX_INVOCATION_HEADER) continue;
+    if (lk === CODEX_ACTOR_AUTHORIZATION_HEADER) continue;
     // Strip accept-encoding: Node fetch auto-decompresses, which would
     // mismatch the Content-Encoding header we forward to the client
     if (lk === 'accept-encoding') continue;

@@ -1,6 +1,10 @@
 import { isCodexSessionId } from './codex-session.js';
 
 export const CODEX_INVOCATION_HEADER = 'x-teamcodex-invocation';
+// Codex only offers its image_gen tool to a provider that requires OpenAI auth
+// or carries this header (codex-rs ModelProviderInfo::uses_openai_actor_authorization).
+// The launched Codex sends a placeholder; the proxy drops it before upstream.
+export const CODEX_ACTOR_AUTHORIZATION_HEADER = 'x-openai-actor-authorization';
 export const CODEX_RECOVERY_SESSION_HEADER = 'x-teamcodex-recovery-session';
 export const CODEX_RECOVERY_CONSUME_PATH = '/teamclaude/codex-recovery/consume';
 
