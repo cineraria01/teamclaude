@@ -144,6 +144,66 @@ test('Codex proxy with custom-root upstream replaces auth, injects account id, a
   }
 });
 
+test('Codex image requests ride the pool and never forward the image_gen actor placeholder', async () => {
+  // Given: Codex's image_gen tool posts JSON to <base_url>/images/generations
+  let upstreamRequest;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    upstreamRequest = {
+      path: req.url,
+      authorization: req.headers.authorization,
+      accountId: req.headers['chatgpt-account-id'],
+      actor: req.headers['x-openai-actor-authorization'],
+      body: JSON.parse(Buffer.concat(chunks).toString()),
+    };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ created: 1, data: [{ b64_json: 'aW1n' }] }));
+  });
+  const upstreamPort = await listen(upstream);
+  const manager = new AccountManager([{
+    name: 'codex-pro',
+    provider: 'codex',
+    type: 'oauth',
+    accessToken: 'pooled-access-token',
+    accountId: 'workspace-123',
+    expiresAt: Date.now() + 3_600_000,
+  }]);
+  const proxy = createProxyServer(manager, {
+    provider: 'codex',
+    upstream: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+    activeWarmup: false,
+    codexUsageRefresh: false,
+  });
+  const proxyPort = await listen(proxy);
+
+  try {
+    // When
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/codex/images/generations`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-openai-actor-authorization': 'teamcodex',
+      },
+      body: JSON.stringify({ prompt: 'a red apple' }),
+    });
+    const body = await response.json();
+
+    // Then
+    assert.equal(response.status, 200);
+    assert.deepEqual(body.data, [{ b64_json: 'aW1n' }]);
+    assert.deepEqual(upstreamRequest, {
+      path: '/backend-api/codex/images/generations',
+      authorization: 'Bearer pooled-access-token',
+      accountId: 'workspace-123',
+      actor: undefined,
+      body: { prompt: 'a red apple' },
+    });
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream)]);
+  }
+});
+
 test('Codex quota headers classify a primary weekly window by its actual length', () => {
   const manager = new AccountManager([{
     name: 'codex-pro',

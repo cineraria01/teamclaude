@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CODEX_ACTOR_AUTHORIZATION_HEADER } from './codex-recovery.js';
 
 const CODEX_REFRESH_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -327,6 +328,10 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
   // Router mode keeps requires_openai_auth = false for the same reason; the
   // router's caller key rides in the base_url path (see resolveCodexRouter), so
   // whatever bearer Codex adds is relayed to this proxy and replaced as usual.
+  //
+  // The actor-authorization placeholder switches on Codex's image_gen tool,
+  // which a login-free provider otherwise never gets; image requests go to
+  // <base_url>/images/* and ride the pool like any other request.
   const provider = [
     routerBaseUrl ? 'name = "TeamCodex via Codex Router"' : 'name = "TeamCodex"',
     routerBaseUrl
@@ -335,6 +340,7 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
     'wire_api = "responses"',
     'requires_openai_auth = false',
     'supports_websockets = false',
+    `http_headers = { "${CODEX_ACTOR_AUTHORIZATION_HEADER}" = "teamcodex" }`,
     'env_http_headers = { "X-TeamCodex-Invocation" = "TEAMCODEX_INVOCATION_ID" }',
   ].join(', ');
   const overrides = [
