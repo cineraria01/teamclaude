@@ -215,9 +215,13 @@ test('buildCodexProxyArgs router mode points Codex at the router capability URL,
   assert.match(args[3], /requires_openai_auth = false/);
   assert.doesNotMatch(args[3], /env_key/);
   assert.match(args[3], /X-TeamCodex-Invocation/);
+  // The router answers a bearer-less image request with native_session_required,
+  // so router mode carries a placeholder the pool replaces.
+  assert.match(args[3], /http_headers = \{ "x-openai-actor-authorization" = "teamcodex", "authorization" = "Bearer teamcodex-pool" \}/);
 
-  // And: the plain pool launch is unchanged
+  // And: the plain pool launch is unchanged and sends no placeholder bearer
   assert.match(buildCodexProxyArgs(4567, userArgs)[3], /base_url = "http:\/\/127\.0\.0\.1:4567\/codex"/);
+  assert.doesNotMatch(buildCodexProxyArgs(4567, userArgs)[3], /"authorization"/);
 });
 
 test('resolveCodexRouter is off by default and embeds the caller key from config, env, or file', () => {
