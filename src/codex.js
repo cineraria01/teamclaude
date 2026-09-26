@@ -318,6 +318,9 @@ function readCodexRouterCallerSecret(path) {
   }
 }
 
+// Sent only to the local router, which relays it to this proxy; never upstream.
+const CODEX_POOL_PLACEHOLDER_BEARER = 'teamcodex-pool';
+
 export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {}) {
   // requires_openai_auth stays false: the proxy strips the client's
   // authorization/chatgpt-account-id and injects the pool account's, so a
@@ -331,7 +334,15 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
   //
   // The actor-authorization placeholder switches on Codex's image_gen tool,
   // which a login-free provider otherwise never gets; image requests go to
-  // <base_url>/images/* and ride the pool like any other request.
+  // <base_url>/images/* and ride the pool like any other request. The router
+  // refuses a native image route that carries no bearer at all
+  // (native_session_required) instead of lending its own session, so router
+  // mode also sends a placeholder bearer; the router relays it and this proxy
+  // replaces it with the pool account's like any other client bearer.
+  const imageHeaders = [
+    `"${CODEX_ACTOR_AUTHORIZATION_HEADER}" = "teamcodex"`,
+    ...(routerBaseUrl ? [`"authorization" = "Bearer ${CODEX_POOL_PLACEHOLDER_BEARER}"`] : []),
+  ].join(', ');
   const provider = [
     routerBaseUrl ? 'name = "TeamCodex via Codex Router"' : 'name = "TeamCodex"',
     routerBaseUrl
@@ -340,7 +351,7 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
     'wire_api = "responses"',
     'requires_openai_auth = false',
     'supports_websockets = false',
-    `http_headers = { "${CODEX_ACTOR_AUTHORIZATION_HEADER}" = "teamcodex" }`,
+    `http_headers = { ${imageHeaders} }`,
     'env_http_headers = { "X-TeamCodex-Invocation" = "TEAMCODEX_INVOCATION_ID" }',
   ].join(', ');
   const overrides = [
