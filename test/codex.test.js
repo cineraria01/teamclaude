@@ -136,8 +136,7 @@ test('buildCodexProxyArgs uses a login-free HTTP-only local provider', () => {
   assert.doesNotMatch(args[3], /env_key/);
   // image_gen is only offered to an OpenAI-auth or actor-authorized provider
   assert.match(args[3], /http_headers = \{ "x-openai-actor-authorization" = "teamcodex" \}/);
-  assert.equal(args[4], '-c');
-  assert.equal(args[5], 'chatgpt_base_url="http://127.0.0.1:4567"');
+  assert.equal(args.some(arg => arg.startsWith('chatgpt_base_url=')), false);
 });
 
 test('resolveCodexCliBin prefers env override, then the node-sibling CLI, then PATH', () => {

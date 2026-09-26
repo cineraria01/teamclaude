@@ -359,8 +359,6 @@ export function buildCodexProxyArgs(port, userArgs, { routerBaseUrl = null } = {
     'model_provider="teamcodex_proxy"',
     '-c',
     `model_providers.teamcodex_proxy={ ${provider} }`,
-    '-c',
-    `chatgpt_base_url="http://127.0.0.1:${port}"`,
   ];
   if (userArgs[0] === 'resume') {
     return [...userArgs, ...overrides];
