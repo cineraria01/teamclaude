@@ -332,3 +332,24 @@ ended; then `grep -c 'reservation underflow' ~/.config/teamcodex.launchd.error.l
 Roll back with `teamcodex-manual-rollout.py <last-good artifact dir>`; if the
 wedged requests keep the drain fence from reaching zero, skip the fence only
 after confirming account `inflight` is 0 (nothing is being served upstream).
+
+## Deployment record (2026-09-27, local tmux services)
+
+- This machine uses `com.hyeongsu.teamclaude` and `com.hyeongsu.teamcodex`,
+  whose tmux wrappers load `~/.local/share/teamcodex-global/lib/node_modules/teamcodex`.
+  The older `com.qjc.teamcodex` artifact workflow above does not describe this host.
+- Deployed source commit `6b9b7a0`; source hash
+  `943a2d00332b29f89df37b0da2bc345fba41d5c5cb9d2667f40dfc4d01cd24aa`.
+  The former local `chatgpt_base_url` removal is now included in the fork and its tests.
+- Validation: full Node suite 901 passed, zero failures/skips. tcodex rendering,
+  install, login and seven tmux lifecycle scenarios passed; Claude statusline
+  and installer checks passed. The optional legacy Fable routing module is not
+  loaded on this host; its compatibility test fails at the old `_403KeptActiveAt`
+  exclusion expectation against this fork, so it was not enabled.
+- Applied authenticated deployment drains, waited for both active request counts
+  to reach zero, backed up installed sources, replaced sources, and restarted
+  the two tmux proxy sessions. Both live status endpoints returned the expected
+  source hash and `deployment-draining: 0`, with 4 Claude and 2 Codex accounts.
+- Reinstalled tcodex HUD/launcher from `9d44f6a` and verified installed file bytes.
+  Claude statusline `404f2ec` was already pushed and its installed assets matched.
+  No real model-generation or interactive client UI smoke test was performed.
