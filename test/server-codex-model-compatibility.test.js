@@ -378,7 +378,8 @@ test('fresh recovery turns quarantine the Sol fleet before pre-dispatch Terra fa
 
     assert.equal(recovered.status, 200);
     assert.deepEqual(await recovered.json(), { model: TERRA });
-    assert.deepEqual(attempts, [`a:${SOL}`, `b:${SOL}`, `a:${TERRA}`]);
+    // Sequential routing keeps the last serving account when it supports the fallback.
+    assert.deepEqual(attempts, [`a:${SOL}`, `b:${SOL}`, `b:${TERRA}`]);
     assert.ok(logs.some(line => line.includes(
       `[TeamClaude] codex-model-fallback: ${SOL} → ${TERRA}`,
     )));

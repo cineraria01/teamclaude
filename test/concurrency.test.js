@@ -2179,3 +2179,115 @@ test('disabling the account a waiter needs settles that waiter instead of strand
 
   am.releaseAccount(x); am.releaseAccount(y);
 });
+
+// Codex spends one account at a time, including while a switch drains streams.
+test('single-account mode queues at the cap and ignores stale connection affinity', async () => {
+  const am = new AccountManager(makeAccounts(2), 0.98, 0, 2);
+  am.singleActiveAccount = true;
+  measureAll(am);
+  const connection = {};
+  am._affinity.set(connection, am.accounts[1]);
+  const first = await am.acquireAccount(null, 0);
+  const second = await am.acquireAccount(null, 0, null, connection);
+  assert.equal(second, first);
+  const pending = am.acquireAccount(null, 1000);
+  assert.equal(am._waiters.length, 1);
+  assert.equal(am.accounts.filter(a => a.inflight > 0).length, 1);
+  am.releaseAccount(first);
+  assert.equal(await pending, first);
+  am.releaseAccount(second);
+  am.releaseAccount(first);
+});
+
+test('single-account mode drains an exhausted or removed account before failover', async t => {
+  for (const removed of [false, true]) {
+    await t.test(removed ? 'removed' : 'quota exhausted', async () => {
+      const am = new AccountManager(makeAccounts(2), 0.98, 0, 3);
+      am.singleActiveAccount = true;
+      measureAll(am);
+      const first = await am.acquireAccount(null, 0);
+      const second = await am.acquireAccount(null, 0);
+      assert.equal(second, first);
+      if (removed) am.removeAccount(first.index);
+      else am.updateQuota(first, {
+        'anthropic-ratelimit-unified-5h-utilization': '0.99',
+        'anthropic-ratelimit-unified-5h-reset': String(Math.floor((Date.now() + HOUR) / 1000)),
+      });
+      const pending = am.acquireAccount(new Set([first]), 1000);
+      assert.equal(am._waiters.length, 1);
+      am.releaseAccount(first);
+      assert.equal(am._waiters.length, 1, 'partial stream completion cannot switch accounts');
+      am.releaseAccount(second);
+      const next = await pending;
+      assert.ok(next);
+      assert.notEqual(next, first);
+      am.releaseAccount(next);
+    });
+  }
+});
+
+test('single-account mode keeps cold accounts sticky and cancels queued recovery cleanly', async () => {
+  const am = new AccountManager(makeAccounts(2).map((a, i) => ({ ...a, accountUuid: `id-${i}` })), 0.98, 0, 2);
+  am.singleActiveAccount = true;
+  const first = await am.acquireAccount(null, 0);
+  am.releaseAccount(first);
+  assert.equal(await am.acquireAccount(null, 0), first, 'missing quota headers must not rotate accounts');
+  const abort = new AbortController();
+  const preferred = am.accounts.find(a => a !== first);
+  const pending = am.acquireAccount(null, 1000, abort.signal, null, null, preferred.accountUuid);
+  assert.equal(am._waiters.length, 1);
+  abort.abort();
+  assert.equal(await pending, null);
+  assert.equal(am._waiters.length, 0);
+  am.releaseAccount(first);
+  const next = await am.acquireAccount(null, 0, null, null, null, preferred.accountUuid);
+  assert.equal(next, preferred);
+  am.releaseAccount(next);
+});
+
+test('Codex HTTP overflow waits for the serving account instead of spending a second account', async () => {
+  const requests = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    requests.push({ authorization: req.headers.authorization, res });
+  });
+  const upstreamPort = await listen(upstream);
+  const am = new AccountManager(makeAccounts(2).map(a => ({ ...a, provider: 'codex' })), 0.98, 0, 10);
+  const proxy = createProxyServer(am, {
+    provider: 'codex', upstream: `http://127.0.0.1:${upstreamPort}`,
+    activeWarmup: false, codexUsageRefresh: false, overflowQueueTimeoutMs: 2000,
+  });
+  const port = await listen(proxy);
+  const wait = async predicate => {
+    for (let i = 0; i < 100 && !predicate(); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(predicate());
+  };
+  const send = input => fetch(`http://127.0.0.1:${port}/codex/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.6', input }),
+  }).then(async res => { assert.equal(res.status, 200); await res.text(); });
+  const finish = request => {
+    request.res.writeHead(200, { 'content-type': 'application/json' });
+    request.res.end(JSON.stringify({ status: 'completed' }));
+  };
+  try {
+    const first = Array.from({ length: 10 }, (_, i) => send(`first-${i}`));
+    await wait(() => requests.length === 10);
+    const second = send('eleventh');
+    await wait(() => am._waiters.length === 1);
+    assert.equal(requests.length, 10);
+    assert.equal(am.accounts.filter(a => a.inflight > 0).length, 1);
+    finish(requests[0]);
+    await first[0];
+    await wait(() => requests.length === 11);
+    assert.ok(requests.every(r => r.authorization === requests[0].authorization));
+    requests.slice(1).forEach(finish);
+    await Promise.all([...first, second]);
+    assert.equal(am.accounts.every(a => a.inflight === 0), true);
+  } finally {
+    await Promise.all([proxy, upstream].map(server => new Promise(resolve => {
+      server.close(resolve);
+      server.closeAllConnections();
+    })));
+  }
+});

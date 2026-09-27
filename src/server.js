@@ -342,6 +342,7 @@ export function resolveAnthropicUsageUrl(configured, upstream) {
 
 export function createProxyServer(accountManager, config, hooks = {}) {
   const provider = config.provider === 'codex' ? 'codex' : 'anthropic';
+  accountManager.singleActiveAccount = provider === 'codex';
   const upstream = config.upstream || (provider === 'codex'
     ? 'https://chatgpt.com/backend-api/codex'
     : 'https://api.anthropic.com');

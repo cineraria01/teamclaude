@@ -357,6 +357,8 @@ export class AccountManager {
 
   /** Has this account a free concurrency slot? */
   _hasCapacity(account) {
+    if (this.singleActiveAccount && this.servingAccount?.inflight > 0
+        && this.servingAccount !== account) return false;
     return account.inflight < account.maxConcurrent;
   }
 
@@ -414,6 +416,25 @@ export class AccountManager {
     model = null,
     preferredAccountUuid = null,
   ) {
+    if (this.singleActiveAccount) {
+      // Keep the object even after removal: its outstanding streams must drain
+      // before another account can start. Socket affinity cannot override this.
+      const serving = this.servingAccount;
+      const current = this.accounts[this.currentIndex];
+      const eligible = account => account && this.accounts.includes(account)
+        && this._isAvailable(account, model) && !exclude?.has(account);
+      const account = serving?.inflight > 0 ? serving
+        : typeof preferredAccountUuid === 'string'
+          ? this.accounts.find(a => a.accountUuid === preferredAccountUuid)
+          : eligible(current) ? current : this._selectBest(exclude, model);
+      if (!eligible(account) || !this._hasCapacity(account)
+          || (typeof preferredAccountUuid === 'string'
+            && account.accountUuid !== preferredAccountUuid)) return null;
+      this.servingAccount = account;
+      this.currentIndex = account.index;
+      account.inflight++;
+      return account;
+    }
     // Only an object/function is a valid WeakMap key. Ignore anything else (a
     // primitive key from an external caller would otherwise throw on get/set).
     const affOk = affinityKey != null
