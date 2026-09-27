@@ -353,3 +353,17 @@ after confirming account `inflight` is 0 (nothing is being served upstream).
 - Reinstalled tcodex HUD/launcher from `9d44f6a` and verified installed file bytes.
   Claude statusline `404f2ec` was already pushed and its installed assets matched.
   No real model-generation or interactive client UI smoke test was performed.
+
+## Deployment record (2026-09-27, sequential Codex accounts)
+
+- Proxy fix `dd2445e` pushed to `qjc/resilient-routing`; only Codex inference
+  uses one serving account at a time and drains it before switching.
+- Set the local TeamCodex concurrency limit to 10. The eleventh request queues
+  within the existing timeout; it does not spill onto another account.
+- Validation: 907 tests passed, zero failures; targeted ESLint and diff checks passed.
+- Drained active requests, installed the two changed source files, restarted
+  TeamCodex, and verified source hash
+  `31a76c788219958b51e4113e3b4a40f3b321e77d670eeeacbd367e9ea9fba011`,
+  `deployment-draining: 0`, both limits at 10, and only one account in flight.
+- Initial rollout rolled back after a tmux restart command failure; the retry
+  completed and the authenticated status endpoint verified the running code.
