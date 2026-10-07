@@ -465,7 +465,7 @@ test('Codex usage refresh isolates invalid responses without changing prior quot
     activeWarmup: false,
     warmupIntervalMs: 0,
   });
-  await listen(proxy);
+  const port = await listen(proxy);
 
   try {
     await waitFor(() => requests.length === 2 && manager.accounts[0].quota.unified7d === 0.31);
@@ -474,6 +474,11 @@ test('Codex usage refresh isolates invalid responses without changing prior quot
     assert.deepEqual(await proxy.refreshQuotaAll(), { targets: 2, measured: 1 });
     assert.equal(manager.accounts[1].quota.unified7d, 0.09);
     assert.equal(manager.accounts[1].status, 'active');
+    // `teamcodex reload` reaches the same refresh and reports the partial result.
+    const reload = await fetch(`http://127.0.0.1:${port}/teamclaude/reload`, { method: 'POST' });
+    assert.equal(reload.status, 200);
+    assert.deepEqual(await reload.json(), { targets: 2, measured: 1, total: 2 });
+    assert.equal(manager.accounts[1].quota.unified7d, 0.09);
   } finally {
     await Promise.all([closeServer(proxy), closeServer(upstream)]);
   }

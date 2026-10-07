@@ -1358,6 +1358,8 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       const remoteAddr = req.socket.remoteAddress;
       const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
       const isRotateRequest = req.url === '/teamclaude/rotate';
+      // Operator "re-measure usage now" (`teamcodex reload`, the CLI twin of TUI R).
+      const isReloadRequest = req.url === '/teamclaude/reload';
 
       // BYOK lane. Claude Code never carries this prefix, so no traffic on
       // /v1/... can reach the normalization below — the isolation is structural.
@@ -1460,7 +1462,14 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         });
         return;
       }
-      if ((isRotateRequest || isResetCreditRequest) && proxyApiKey
+      if (isReloadRequest && !isLocal) {
+        rejectEarlyRequest(req, res, 403, { 'Content-Type': 'application/json' }, {
+          type: 'error',
+          error: { type: 'permission_error', message: 'Quota reload is local-only.' },
+        });
+        return;
+      }
+      if ((isRotateRequest || isResetCreditRequest || isReloadRequest) && proxyApiKey
           && clientKey !== proxyApiKey && bearerKey !== proxyApiKey) {
         rejectEarlyRequest(req, res, 401, { 'Content-Type': 'application/json' }, {
           type: 'error',
@@ -1566,6 +1575,49 @@ export function createProxyServer(accountManager, config, hooks = {}) {
           unified5h: quota.unified5h ?? null,
           unified7d: quota.unified7d ?? null,
         }));
+        return;
+      }
+
+      if (isReloadRequest) {
+        if (req.method !== 'POST') {
+          rejectEarlyRequest(
+            req,
+            res,
+            405,
+            { 'Content-Type': 'application/json', Allow: 'POST' },
+            {
+              type: 'error',
+              error: { type: 'invalid_request_error', message: 'Quota reload requires POST.' },
+            },
+          );
+          return;
+        }
+        const contentLength = req.headers['content-length'];
+        const bodyFree = (contentLength == null || contentLength === '0')
+          && req.headers['transfer-encoding'] == null;
+        if (!bodyFree) {
+          rejectEarlyRequest(req, res, 400, { 'Content-Type': 'application/json' }, {
+            type: 'error',
+            error: { type: 'invalid_request_error', message: 'Quota reload does not accept a body.' },
+          });
+          return;
+        }
+        // Accounts with requests in flight are skipped (see refreshQuotaAll);
+        // `total` lets the caller say so instead of implying a full refresh.
+        const result = await refreshQuotaAll();
+        if (result === -1 || result == null) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'quota_reload_unavailable',
+              message: 'No request has flowed through the proxy yet, so there is nothing to re-measure with.',
+            },
+          }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ...result, total: accountManager.accounts.length }));
         return;
       }
 

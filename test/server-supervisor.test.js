@@ -566,6 +566,13 @@ test('supervisor rejects remote account rotation even with a valid proxy API key
       method: 'POST',
       headers: { 'x-api-key': 'tc-remote-rotate' },
     });
+    const blockedReload = await request({
+      host,
+      port,
+      path: '/teamclaude/reload',
+      method: 'POST',
+      headers: { 'x-api-key': 'tc-remote-rotate' },
+    });
     const recoveryEnv = buildClaudeRecoveryEnv({
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     }, 'account-b');
@@ -606,6 +613,7 @@ test('supervisor rejects remote account rotation even with a valid proxy API key
     });
     assert.equal(blocked.status, 403);
     assert.equal(JSON.parse(blocked.body).error.type, 'permission_error');
+    assert.equal(blockedReload.status, 403);
     assert.equal(blockedRecoveryRoute.status, 403);
     assert.deepEqual(
       malformedRecoveryRoutes.map(result => result.status),
