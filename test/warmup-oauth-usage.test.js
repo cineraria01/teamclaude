@@ -112,6 +112,40 @@ test('the OAuth usage report measures every idle account at startup without a pr
   }
 });
 
+test('POST /teamclaude/reload re-measures the fleet and reports what it covered', async () => {
+  const seen = [];
+  const upstream = fixtureUpstream(seen);
+  const upstreamPort = await listen(upstream);
+  const am = new AccountManager(makeAccounts(2), 0.98, 0, 3);
+  const proxy = createProxyServer(am, {
+    provider: 'anthropic', upstream: `http://127.0.0.1:${upstreamPort}`,
+    oauthUsageUrl: `http://127.0.0.1:${upstreamPort}/api/oauth/usage`,
+    proxy: { apiKey: 'fixture-proxy-key' },
+    activeWarmup: true, warmupIntervalMs: 0,
+  });
+  const port = await listen(proxy);
+  const url = `http://127.0.0.1:${port}/teamclaude/reload`;
+  try {
+    assert.ok(await waitFor(() => seen.filter(r => r.url === '/api/oauth/usage').length === 2));
+    am.accounts[1].inflight = 1; // a busy account is skipped, and the reply says so
+
+    const res = await fetch(url, { method: 'POST', headers: { 'x-api-key': 'fixture-proxy-key' } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { targets: 1, measured: 1, total: 2 });
+    assert.equal(seen.filter(r => r.url === '/api/oauth/usage').length, 3);
+
+    assert.equal((await fetch(url, { headers: { 'x-api-key': 'fixture-proxy-key' } })).status, 405);
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'x-api-key': 'wrong' } })).status, 401);
+    assert.equal(seen.filter(r => r.url === '/teamclaude/reload').length, 0, 'never forwarded upstream');
+  } finally {
+    am.accounts[1].inflight = 0;
+    proxy.closeAllConnections();
+    await new Promise(r => proxy.close(r));
+    upstream.closeAllConnections();
+    await new Promise(r => upstream.close(r));
+  }
+});
+
 test('a failing usage endpoint leaves the account unmeasured and never breaks the proxy', async () => {
   const seen = [];
   const upstream = fixtureUpstream(seen, { usageStatus: 500 });

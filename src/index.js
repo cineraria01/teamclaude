@@ -213,6 +213,10 @@ switch (command) {
     await statusCommand();
     process.exit(0);
     break;
+  case 'reload':
+    await reloadCommand();
+    process.exit(0);
+    break;
   case 'accounts':
     await accountsCommand();
     process.exit(0);
@@ -492,6 +496,13 @@ async function superviseServerCommand() {
       rejectPublicRequest(req, res, 403, { 'content-type': 'application/json' }, {
         type: 'error',
         error: { type: 'permission_error', message: 'Account rotation is local-only.' },
+      });
+      return;
+    }
+    if (req.url === '/teamclaude/reload' && !isLocal) {
+      rejectPublicRequest(req, res, 403, { 'content-type': 'application/json' }, {
+        type: 'error',
+        error: { type: 'permission_error', message: 'Quota reload is local-only.' },
       });
       return;
     }
@@ -2944,6 +2955,46 @@ async function statusCommand() {
   }
 }
 
+// ── reload ──────────────────────────────────────────────────
+
+/** Re-measure the fleet's usage now (the CLI twin of TUI R), then show status. */
+async function reloadCommand() {
+  const config = await loadOrCreateConfig();
+  const running = await findRunningServer(config);
+  if (!running) {
+    console.log(`Server:         not running (no proxy on port ${config.proxy.port})`);
+    console.log('Start it with:  teamcodex server');
+    process.exit(1);
+  }
+  let res;
+  let data;
+  try {
+    res = await fetch(`http://127.0.0.1:${running.port}/teamclaude/reload`, {
+      method: 'POST',
+      headers: config.proxy.apiKey ? { 'x-api-key': config.proxy.apiKey } : undefined,
+      signal: AbortSignal.timeout(60_000),
+    });
+    data = await res.json().catch(() => null);
+  } catch (err) {
+    console.error(`Quota reload failed: ${err.message}`);
+    process.exit(1);
+  }
+  if (res.status === 404) {
+    console.error('The running server does not support reload yet. Apply it with: teamcodex restart');
+    process.exit(1);
+  }
+  if (!res.ok || data?.targets == null) {
+    console.error(`Quota reload failed: ${data?.error?.message || `HTTP ${res.status}`}`);
+    process.exit(1);
+  }
+  const skipped = data.total - data.targets;
+  console.log(`Re-measured ${data.measured}/${data.targets} account(s)`
+    + (data.measured < data.targets ? ' — the rest failed or were skipped' : '')
+    + (skipped > 0 ? `; ${skipped} busy or errored account(s) skipped (busy ones update from live traffic)` : '')
+    + '\n');
+  await statusCommand();
+}
+
 // ── accounts ────────────────────────────────────────────────
 
 async function accountsCommand() {
@@ -3379,6 +3430,7 @@ Commands:
   resume [ID]         Resume the exact ID, or the current cmux tab checkpoint
   env                 Print an equivalent Codex launch command
   status              Show proxy & account status
+  reload              Re-measure every idle account's usage now, then show status
   accounts            List configured Codex accounts
   reauth <name>       Re-authenticate one existing OAuth account
   subscription cancel Track a cancelled subscription without disabling it
@@ -3418,6 +3470,8 @@ Commands:
   env                 Print env vars to use with Claude
   run [-- args...]    Run Claude Code through the proxy
   status              Show proxy & account status (live)
+  reload              Re-measure every idle account's usage now (the dashboard's R),
+                      then show status
   accounts            List configured accounts
   reauth <name>       Re-authenticate one existing OAuth account
   remove <name>       Remove an account
