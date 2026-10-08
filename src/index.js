@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline';
 import { assertSafeProxyConfig, loadOrCreateConfig, loadConfig, atomicConfigUpdate, getConfigPath, getServerStatePath, writeServerState, readServerState, clearServerState, readQuotaCache, writeQuotaCacheSync, normalizeTokenRefreshIntervalMs } from './config.js';
 import { AccountManager } from './account-manager.js';
 import { createProxyServer } from './server.js';
+import { applyLocalByokKey, normalizeByokConfig } from './byok.js';
 import { importCredentials, loginOAuth, fetchProfile, refreshAccessToken, isTokenExpiringSoon } from './oauth.js';
 import {
   assertSafeCodexArgs,
@@ -282,6 +283,7 @@ async function serverCommand() {
 async function superviseServerCommand() {
   const config = await loadOrCreateConfig();
   assertSafeProxyConfig(config);
+  const byokConfig = normalizeByokConfig(config.byok);
   const port = config?.proxy?.port;
   const proxyApiKey = config?.proxy?.apiKey;
   const existing = await findRunningServer(config);
@@ -475,6 +477,7 @@ async function superviseServerCommand() {
     const isLocal = remoteAddr === '127.0.0.1'
       || remoteAddr === '::1'
       || remoteAddr === '::ffff:127.0.0.1';
+    applyLocalByokKey(req, byokConfig);
     if (!isLocal) delete req.headers['x-teamcodex-status-identity'];
     if (consumeDeploymentDrain(req, res, isLocal)) return;
     if (consumeCodexRecoveryReceipt(req, res, isLocal)) return;

@@ -961,6 +961,14 @@ Confirm it is on: `/teamclaude/status` grows a `byok` object with `inflight`,
 `admitted`, `rejected`, and `injected` counters. Three different failures collapse
 into a similar-looking status, so read the key **and** the log together:
 
+For a native app on this PC, set `byok.allowLocalWithoutKey: true` and restart.
+The public supervisor then authenticates a loopback `POST /byok/v1/messages`
+with its stored BYOK key when the client sends JSON and no credentials or
+browser headers. The app can leave its key empty. This is off by default;
+remote requests, browser requests, and explicitly supplied keys keep the usual
+authentication. Locality is checked at the public listener, before the worker
+hop turns every connection into loopback.
+
 | `byok` in status | Log line | What it means |
 |---|---|---|
 | the key is **absent** | none possible | Your build predates the surface. No config will produce it. Reinstall from the default branch. |
@@ -974,9 +982,11 @@ log only speaks when there is an `error` to report.
 What the proxy does on that surface, and nothing else:
 
 - Normalizes the request `system` **only when the required block is absent**
-  (string and array forms both handled; your own system content is preserved
-  after it) and resyncs `content-length`. A request that already carries it is
-  forwarded byte-identical.
+  (string and array forms both handled). The marker is a standalone text block:
+  a string system becomes two blocks, keeping your original prompt intact in
+  the second. Embedding the marker in a longer string is insufficient for OAuth
+  requests and can cause an opaque 429. Resyncs `content-length`; a request that
+  already carries the standalone marker is forwarded byte-identical.
 - Drops `origin`, `referer`, `cookie`, and anything prefixed `sec-fetch-`,
   `sec-ch-`, or `x-forwarded-` before dispatch, and answers `OPTIONS` locally so
   a preflight is not relayed upstream. Note this makes the *request* acceptable

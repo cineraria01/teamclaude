@@ -404,6 +404,61 @@ test('supervisor strips request headers nominated by Connection before worker fo
   }
 });
 
+test('supervisor authenticates keyless native BYOK requests while browser and remote requests stay gated', { timeout: 15000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamclaude-supervisor-byok-local-'));
+  const configPath = join(dir, 'config.json');
+  const port = await unusedPort();
+  const seen = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    seen.push({ headers: req.headers, body: Buffer.concat(chunks).toString() });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  await writeFile(configPath, JSON.stringify({
+    proxy: { port, apiKey: 'tc-test' },
+    upstream: `http://127.0.0.1:${upstreamPort}`,
+    activeWarmup: false,
+    byok: { enabled: true, apiKey: 'byok-test-secret-0123456789', minUsableAccounts: 0, allowLocalWithoutKey: true },
+    accounts: [{ name: 'primary', type: 'apikey', apiKey: 'fixture-upstream' }],
+  }));
+  const child = spawn(process.execPath, [entry, 'server'], {
+    env: { ...process.env, TEAMCLAUDE_CONFIG: configPath },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const body = JSON.stringify({ model: 'claude-opus-5-5', system: '셀비 AI 연결 시험입니다.', messages: [] });
+  const send = (headers = {}, host = '127.0.0.1', path = '/byok/v1/messages') => request({
+    host, port, path, method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body,
+  });
+  try {
+    await waitUntil(() => status(port), 'proxy did not start');
+    assert.equal((await send()).status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].headers['x-api-key'], 'fixture-upstream');
+    assert.equal(JSON.parse(seen[0].body).system[1].text, '셀비 AI 연결 시험입니다.');
+    for (const headers of [
+      { origin: 'https://example.test' },
+      { 'sec-fetch-mode': 'cors' },
+      { 'content-type': 'text/plain' },
+      { 'x-api-key': 'wrong-key' },
+    ]) assert.equal((await send(headers)).status, 401);
+    const host = externalIPv4();
+    if (host) {
+      assert.equal((await send({}, host)).status, 401);
+      assert.equal((await send({ authorization: 'Bearer tc-test' }, host)).status, 401);
+    }
+    assert.equal(seen.length, 1, 'unauthenticated requests must not reach upstream');
+    assert.equal((await send({}, '127.0.0.1', '/v1/messages')).status, 200);
+    assert.equal(seen[1].body, body, 'ordinary Claude Code request bytes stay unchanged');
+  } finally {
+    await stopChild(child);
+    await close(upstream);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('supervisor preserves proxy API-key authentication for remote clients', { timeout: 15000 }, async t => {
   const host = externalIPv4();
   if (!host) {

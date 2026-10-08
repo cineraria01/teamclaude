@@ -7,6 +7,7 @@ import {
   scrubBrowserHeaders,
   hasUnsafeSegments,
   applyByokRequest,
+  applyLocalByokKey,
   answerByokPreflight,
   admitByok,
 } from '../src/byok.js';
@@ -55,8 +56,57 @@ test('byok normalizes an enabled config with defaults', () => {
   assert.equal(result.enabled, true);
   assert.equal(result.prefix, '/byok');
   assert.equal(result.apiKey, VALID_KEY);
+  assert.equal(result.allowLocalWithoutKey, false);
   assert.ok(result.minUsableAccounts >= 1);
   assert.ok(result.maxConcurrent >= 1);
+});
+
+test('local automatic BYOK authentication is explicitly opt-in', () => {
+  for (const value of [undefined, false, 'true', 1]) {
+    const config = normalizeByokConfig({ enabled: true, apiKey: VALID_KEY, allowLocalWithoutKey: value });
+    const req = { ...makeReq(), socket: { remoteAddress: '127.0.0.1' } };
+    assert.equal(applyLocalByokKey(req, config), false);
+    assert.equal(req.headers['x-api-key'], undefined);
+  }
+});
+
+test('local native JSON Messages requests use the stored BYOK key', () => {
+  const config = normalizeByokConfig({ enabled: true, apiKey: VALID_KEY, allowLocalWithoutKey: true });
+  for (const remoteAddress of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    const req = { ...makeReq({}, 'POST', '/byok/v1/messages'), socket: { remoteAddress } };
+    assert.equal(applyLocalByokKey(req, config), true);
+    assert.equal(req.headers['x-api-key'], VALID_KEY);
+  }
+});
+
+test('automatic BYOK authentication rejects remote and browser requests and preserves supplied credentials', () => {
+  const config = normalizeByokConfig({ enabled: true, apiKey: VALID_KEY, allowLocalWithoutKey: true });
+  const cases = [
+    { remoteAddress: '192.0.2.1' },
+    { remoteAddress: '::ffff:192.0.2.1' },
+    { headers: { origin: 'https://example.test' } },
+    { headers: { Origin: 'null' } },
+    { headers: { referer: 'https://example.test' } },
+    { headers: { cookie: 'a=1' } },
+    { headers: { 'sec-fetch-mode': 'cors' } },
+    { headers: { 'sec-ch-ua': 'browser' } },
+    { headers: { 'x-forwarded-for': '127.0.0.1' } },
+    { headers: { 'content-type': 'text/plain' } },
+    { headers: { 'x-api-key': 'wrong-key' } },
+    { headers: { 'x-api-key': '' } },
+    { headers: { authorization: 'Bearer wrong-key' } },
+    { method: 'GET' },
+    { url: '/v1/messages' },
+    { url: '/byok/teamclaude/status' },
+    { url: '/byok/v1/oauth/token' },
+  ];
+  for (const value of cases) {
+    const req = { ...makeReq(value.headers, value.method, value.url),
+      socket: { remoteAddress: value.remoteAddress || '127.0.0.1' } };
+    const headers = { ...req.headers };
+    assert.equal(applyLocalByokKey(req, config), false, JSON.stringify(value));
+    assert.deepEqual(req.headers, headers);
+  }
 });
 
 test('byok normalizes a custom prefix into a leading-slash, no-trailing-slash form', () => {
@@ -157,13 +207,16 @@ test('applyByokRequest injects the marker when system is absent', () => {
   assert.equal(req.headers['content-length'], String(result.body.length));
 });
 
-test('applyByokRequest prepends the marker to a string system and keeps the original text', () => {
+test('applyByokRequest gives a string system a standalone marker block and keeps the original text', () => {
   const req = makeReq();
   const result = applyByokRequest(req, bodyOf({ model: 'm', system: 'You are Aside.' }));
   assert.equal(result.injected, true);
   const parsed = JSON.parse(result.body.toString());
-  assert.ok(parsed.system.startsWith(CLAUDE_CODE_SYSTEM_MARKER));
-  assert.ok(parsed.system.includes('You are Aside.'));
+  assert.deepEqual(parsed.system, [
+    { type: 'text', text: CLAUDE_CODE_SYSTEM_MARKER },
+    { type: 'text', text: 'You are Aside.' },
+  ]);
+  assert.equal(req.headers['content-length'], String(result.body.length));
 });
 
 test('applyByokRequest unshifts a marker block into an array system', () => {
@@ -195,12 +248,28 @@ test('applyByokRequest is idempotent when the marker already exists anywhere in 
   assert.equal(req.headers['content-length'], undefined);
 });
 
-test('applyByokRequest is idempotent for a string system already carrying the marker', () => {
+test('applyByokRequest is idempotent for the exact marker string', () => {
   const req = makeReq();
-  const original = bodyOf({ model: 'm', system: `${CLAUDE_CODE_SYSTEM_MARKER}\n\nmore` });
+  const original = bodyOf({ model: 'm', system: CLAUDE_CODE_SYSTEM_MARKER });
   const result = applyByokRequest(req, original);
   assert.equal(result.injected, false);
   assert.equal(result.body, original);
+});
+
+test('an embedded marker still gets a standalone block and the normalized request is idempotent', () => {
+  const embedded = `${CLAUDE_CODE_SYSTEM_MARKER}\n\n셀비 AI 연결 시험입니다.`;
+  for (const system of [embedded, [{ type: 'text', text: embedded }]]) {
+    const req = makeReq();
+    const result = applyByokRequest(req, bodyOf({ model: 'm', system }));
+    assert.equal(result.injected, true);
+    assert.deepEqual(JSON.parse(result.body).system, [
+      { type: 'text', text: CLAUDE_CODE_SYSTEM_MARKER },
+      { type: 'text', text: embedded },
+    ]);
+    const repeated = applyByokRequest(req, result.body);
+    assert.equal(repeated.injected, false);
+    assert.equal(repeated.body, result.body);
+  }
 });
 
 test('applyByokRequest leaves an unparseable body untouched', () => {

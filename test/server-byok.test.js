@@ -186,8 +186,10 @@ test('a byok request is canonicalized, marker-injected, and origin-scrubbed', as
   assert.equal(seen[0].headers.origin, undefined);
   assert.equal(seen[0].headers.referer, undefined);
   const body = JSON.parse(seen[0].body.toString());
-  assert.ok(body.system.startsWith(CLAUDE_CODE_SYSTEM_MARKER));
-  assert.ok(body.system.includes('You are Aside.'));
+  assert.deepEqual(body.system, [
+    { type: 'text', text: CLAUDE_CODE_SYSTEM_MARKER },
+    { type: 'text', text: 'You are Aside.' },
+  ]);
   assert.equal(seen[0].headers['content-length'], String(seen[0].body.length));
 });
 

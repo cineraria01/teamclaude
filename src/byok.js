@@ -117,6 +117,7 @@ export function normalizeByokConfig(raw) {
     error: null,
     prefix,
     apiKey,
+    allowLocalWithoutKey: raw.allowLocalWithoutKey === true,
     minUsableAccounts: clampInt(raw.minUsableAccounts, DEFAULT_MIN_USABLE_ACCOUNTS, 0),
     maxConcurrent: clampInt(raw.maxConcurrent, DEFAULT_MAX_CONCURRENT, 1),
   };
@@ -146,23 +147,42 @@ export function matchByokSurface(url, prefix) {
   return { path: collapseSlashes(rest[0] === '?' ? `/${rest}` : rest) };
 }
 
+// Only the public supervisor can establish locality; the worker sees every
+// forwarded request as loopback, including remote clients.
+export function applyLocalByokKey(req, config) {
+  if (!config?.enabled || !config.allowLocalWithoutKey) return false;
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress)) return false;
+  const match = matchByokSurface(req.url, config.prefix);
+  if (req.method !== 'POST' || match?.path.split('?')[0] !== '/v1/messages') return false;
+  const headers = req.headers;
+  if (!headers || headers['x-api-key'] != null || headers.authorization != null) return false;
+  if (typeof headers['content-type'] !== 'string'
+      || headers['content-type'].split(';')[0].trim().toLowerCase() !== 'application/json') return false;
+  if (Object.keys(headers).some(name => {
+    const lower = name.toLowerCase();
+    return BROWSER_HEADERS.includes(lower)
+      || BROWSER_HEADER_PREFIXES.some(prefix => lower.startsWith(prefix));
+  })) return false;
+  headers['x-api-key'] = config.apiKey;
+  return true;
+}
+
 function markerPresent(system) {
-  if (typeof system === 'string') return system.includes(CLAUDE_CODE_SYSTEM_MARKER);
+  if (typeof system === 'string') return system === CLAUDE_CODE_SYSTEM_MARKER;
   if (!Array.isArray(system)) return false;
   return system.some((block) => block
     && typeof block === 'object'
     && typeof block.text === 'string'
-    && block.text.includes(CLAUDE_CODE_SYSTEM_MARKER));
+    && block.text === CLAUDE_CODE_SYSTEM_MARKER);
 }
 
-// The client's own system content is preserved after the marker — upstream only
-// requires that the marker be present, and the client's prompt still has to do
-// its job.
+// OAuth requires the marker as a standalone block; joining the client's
+// prompt onto its text can still receive an opaque 429.
 function withMarker(system) {
   if (system == null) return CLAUDE_CODE_SYSTEM_MARKER;
   if (typeof system === 'string') {
     return system.trim()
-      ? `${CLAUDE_CODE_SYSTEM_MARKER}\n\n${system}`
+      ? [{ type: 'text', text: CLAUDE_CODE_SYSTEM_MARKER }, { type: 'text', text: system }]
       : CLAUDE_CODE_SYSTEM_MARKER;
   }
   if (Array.isArray(system)) {

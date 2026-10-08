@@ -37,6 +37,7 @@
   "byok": {
     "enabled": false,
     "prefix": "/byok",
+    "allowLocalWithoutKey": false,
     "apiKey": "byok-change-me-to-a-secret",
     "minUsableAccounts": 2,
     "maxConcurrent": 2
