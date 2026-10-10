@@ -61,8 +61,10 @@ def launch(arguments):
     size = shutil.get_terminal_size()
     # Codex adds a cache-usage row under the accounts.
     rows = len(render(data, agy=agy)) + (not agy)
-    if size.lines < rows + 10 or size.columns < 70:
-        sys.exit(f"Enlarge the terminal to at least 70 columns and {rows + 10} rows.")
+    # Width is free: the footer clips long rows. Too short for a footer, run the CLI alone instead of refusing.
+    if size.lines < rows + 10:
+        print(f"{command}: under {rows + 10} rows, starting without the account footer", file=sys.stderr)
+        os.execv(proxy, [proxy, "run", "--", *arguments])
     session = cli.lower() + "-" + uuid.uuid4().hex[:8]
     base = [tmux, "-L", command + "-hud", "-f", "/dev/null"]
     env = dict(os.environ)

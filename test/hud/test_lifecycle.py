@@ -50,6 +50,25 @@ def check():
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             assert json.loads(result.stdout) == ["run", "--", *arguments], (arguments, result.stdout, result.stderr)
     print("PASS: agy print mode and no terminal skip the footer")
+    # A terminal too short for the footer starts the CLI alone instead of refusing.
+    with tempfile.TemporaryDirectory(prefix="tcodex-test-") as directory:
+        record = Path(directory) / "argv.json"
+        fake = Path(directory) / "teamcodex"
+        fake.write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n")
+        fake.chmod(0o755)
+        runner = ("import launcher\nlauncher.read_status = lambda path: {}\n"
+                  "launcher.render = lambda data, agy=False: ['footer']\n"
+                  "raise SystemExit(launcher.launch(['--model', 'm']))\n")
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 8, 50, 0, 0))
+        env = {k: v for k, v in os.environ.items() if k not in ("LINES", "COLUMNS")}
+        env["PATH"] = directory + os.pathsep + env["PATH"]
+        child = subprocess.Popen([sys.executable, "-c", runner], cwd=HUD, stdin=slave, stdout=slave, stderr=slave, env=env)
+        os.close(slave)
+        assert child.wait(timeout=10) == 0
+        os.close(master)
+        assert json.loads(record.read_text()) == ["run", "--", "--model", "m"], record.read_text()
+    print("PASS: a short terminal runs the CLI without the footer")
     for mode in ("close", "detach", "keep-alive", "two-clients", "attach-failure", "keep-attach-failure",
                  "stale-server-cwd", "agy"):
         with tempfile.TemporaryDirectory(prefix="tcodex-test-") as directory:

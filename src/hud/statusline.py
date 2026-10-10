@@ -373,7 +373,8 @@ def main():
                     cache = "Cache last: unavailable"
                 rows.append(cache[:shutil.get_terminal_size().columns])
             if watching:
-                sys.stdout.write("\033[H\033[J" + "\n".join(rows))
+                # Autowrap off: in a narrow pane a long row is clipped instead of pushing rows out of view.
+                sys.stdout.write("\033[?7l\033[H\033[J" + "\n".join(rows))
                 sys.stdout.flush()
             else:
                 print("\n".join(rows), flush=True)
