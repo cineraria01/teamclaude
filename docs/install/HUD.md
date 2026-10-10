@@ -1,6 +1,6 @@
 # teamcodex · teamagy 하단 줄
 
-2026-10-10부터 프록시 포크 `cineraria01/teamclaude`의 `src/hud/`에 들어 있습니다(옛 `cineraria01/teamcodex`, 그 전 `tcodex` 저장소를 합침).
+2026-10-10부터 프록시 포크 `cineraria01/teamproxy`의 `src/hud/`에 들어 있습니다(옛 `cineraria01/teamcodex`, 그 전 `tcodex` 저장소를 합침).
 프록시 설치본마다 함께 들어가므로 따로 설치하지 않습니다. Claude Code 상태줄은 같은 포크의 [`statusline/`](../../statusline/README.md)입니다.
 
 Codex CLI를 실행하면서 하단에 여러 계정의 사용률과 선택 상태를 보여주는 터미널 실행기입니다.
@@ -76,12 +76,12 @@ TeamClaude의 구독 인증 요청에는 일반 API 키 요청과 다른 헤더�
 ### Codex CLI 설치
 
 macOS의 기존 실행기와 Linux의 로그인·상시 서비스를 검증했습니다. Python 3.9 이상과 공식 Codex CLI가 필요하며, Codex 실행 화면에는 실행 중인 TeamCodex가 필요합니다.
-설치기는 TeamCodex가 없으면 포크 `cineraria01/teamclaude`(브랜치 `main`)의 최신 커밋을 별도 경로에 함께 설치합니다. Node.js/npm과 Git이 필요하며, 하단 고정 실행에는 tmux도 필요합니다. 자세한 안내는 [설치 및 계정 등록](SETUP.md)을 참고하세요.
+설치기는 TeamCodex가 없으면 포크 `cineraria01/teamproxy`(브랜치 `main`)의 최신 커밋을 별도 경로에 함께 설치합니다. Node.js/npm과 Git이 필요하며, 하단 고정 실행에는 tmux도 필요합니다. 자세한 안내는 [설치 및 계정 등록](SETUP.md)을 참고하세요.
 
 ```sh
 brew install tmux                 # macOS, 최초 한 번
-git clone https://github.com/cineraria01/teamclaude.git
-cd teamclaude
+git clone https://github.com/cineraria01/teamproxy.git
+cd teamproxy
 python3 scripts/install.py       # 없는 경우 TeamCodex(프록시 + 실행기) 설치
 # Linux에서 프록시를 상시 실행하려면:
 python3 scripts/install.py --service  # 사용자 systemd 서비스 + 로그인 종료 후 유지

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Installer for teamclaude-statusline (the statusline/ folder of the cineraria01/teamclaude fork).
+# Installer for teamclaude-statusline (the statusline/ folder of the cineraria01/teamproxy fork).
 #
-#   curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline/install.sh?$(date +%s)" | bash
+#   curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamproxy/main/statusline/install.sh?$(date +%s)" | bash
 #
 # Options (env vars):
 #   CLAUDE_DIR               Claude Code config dir (default: ~/.claude)
@@ -11,7 +11,7 @@
 #                            live-reload commands (see teamclaude-reload-patch.sh)
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline"
+REPO_RAW="https://raw.githubusercontent.com/cineraria01/teamproxy/main/statusline"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SCRIPT_DEST="$CLAUDE_DIR/statusline-teamclaude.py"
 WRAPPER_DEST="$CLAUDE_DIR/statusline-wrapper.py"
@@ -76,7 +76,7 @@ if [ -n "$SRC_DIR" ] && command -v git >/dev/null 2>&1; then
   INSTALLED_SHA=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
 fi
 if [ -z "$INSTALLED_SHA" ] && command -v git >/dev/null 2>&1; then
-  INSTALLED_SHA=$(git ls-remote "https://github.com/cineraria01/teamclaude" refs/heads/main 2>/dev/null | cut -f1 || true)
+  INSTALLED_SHA=$(git ls-remote "https://github.com/cineraria01/teamproxy" refs/heads/main 2>/dev/null | cut -f1 || true)
 fi
 [ -n "$INSTALLED_SHA" ] && echo "$INSTALLED_SHA" > "$SHA_DEST"
 
