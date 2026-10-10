@@ -93,12 +93,15 @@ npm 레지스트리의 `teamcodex`. 이름은 같지만 이 포크의 수정이 
 
 하단 줄 없이 바로 실행하는 경우: 인쇄 모드(`-p`/`--print`, agy는 `--prompt`도)와 `--version`, 터미널이 아닌 실행,
 높이가 계정 수 + 12줄보다 낮은 창. 폭이 좁은 창은 하단 줄 오른쪽이 잘린다.
-창을 닫으면 CLI 세션도 끝난다. `--keep-alive`를 첫 인자로 주면 남고, `tmux -L <풀>-hud attach`로 다시 붙는다.
+창을 닫으면 CLI 세션도 끝난다. `--keep-alive`를 주면 남고, `tmux -L <풀>-hud attach`로 다시 붙는다.
+`--yolo`를 주면 승인 없이 실행한다. 세 명령 모두 같은 낱말이고, 실행기가 각 CLI의 플래그로 바꿔 넘긴다
+(Claude Code·agy `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`).
 
 ```sh
 # Claude
 teamclaude                          # Claude Code + 하단 줄
 teamclaude -c                       # Claude Code 옵션은 그대로 넘어간다
+teamclaude --yolo                   # 승인 없이(세 명령 공통)
 teamclaude -p "이 저장소 요약"        # 인쇄 모드: 하단 줄 없이
 teamclaude -- mcp list              # Claude Code 하위 명령
 teamclaude status                   # 프록시 명령

@@ -16,11 +16,12 @@ from codex_login import login
 # Each wrapper names its pool with the first argument (teamcodex passes none). `oneshot` flags print once and
 # exit, so a footer would vanish with them; those runs, and runs without a terminal, skip the footer.
 # `newline` is the key the CLI reads as a newline in its prompt: tmux cannot pass the CLI's own Shift+Enter
-# protocol through, so the footer's tmux server maps Shift+Enter to it.
+# protocol through, so the footer's tmux server maps Shift+Enter to it. `yolo` is the CLI's own flag that skips
+# every approval; `--yolo` stands for it in all three pools.
 MODES = {
-    "claude": ("teamclaude", "Claude", ("p", "print", "v", "version"), "M-Enter"),
-    "agy": ("teamagy", "agy", ("p", "print", "prompt", "version"), "M-Enter"),
-    "codex": ("teamcodex", "Codex", ("V", "version"), "C-j"),
+    "claude": ("teamclaude", "Claude", ("p", "print", "v", "version"), "M-Enter", "--dangerously-skip-permissions"),
+    "agy": ("teamagy", "agy", ("p", "print", "prompt", "version"), "M-Enter", "--dangerously-skip-permissions"),
+    "codex": ("teamcodex", "Codex", ("V", "version"), "C-j", "--dangerously-bypass-approvals-and-sandbox"),
 }
 # The caller's choices that must reach the CLI even when the HUD tmux server was started by an earlier launch
 # (its panes get that server's environment): Codex home, and `claude N`'s pinned account.
@@ -35,10 +36,9 @@ def launch(arguments):
     mode = arguments[0][2:] if arguments and arguments[0] in ("--claude", "--agy") else "codex"
     if mode != "codex":
         arguments = arguments[1:]
-    command, cli, flags, newline = MODES[mode]
-    keep_alive = bool(arguments and arguments[0] == "--keep-alive")
-    if keep_alive:
-        arguments = arguments[1:]
+    command, cli, flags, newline, yolo = MODES[mode]
+    keep_alive = "--keep-alive" in arguments
+    arguments = [yolo if a == "--yolo" else a for a in arguments if a != "--keep-alive"]
     if arguments and arguments[0] == "login" and mode == "codex":
         return login(arguments[1:])
     if arguments == ["--help"]:
@@ -48,6 +48,7 @@ def launch(arguments):
                  "  teamcodex -- resume ID     Continue an existing conversation\n" if mode == "codex" else
                  f"  {command} -p PROMPT          Print mode, no footer (also without a terminal)\n"
                  f"  {command} -- SUBCOMMAND      {cli} subcommand, no footer\n")
+              + f"  {command} --yolo               {cli} without approval prompts ({yolo})\n"
               + f"  {command} --keep-alive [{cli} arguments]  Keep running after detach\n"
               "  Closing the terminal or Ctrl-b d stops the session by default.\n"
               f"  tmux -L {command}-hud attach   Reattach\n"
