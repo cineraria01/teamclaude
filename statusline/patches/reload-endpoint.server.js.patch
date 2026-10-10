@@ -1,0 +1,35 @@
+--- a/src/server.js
++++ b/src/server.js
+@@ -377,6 +377,32 @@
+       if (req.method === 'GET' && req.url === '/teamclaude/status') {
+         res.writeHead(200, { 'Content-Type': 'application/json' });
+         res.end(JSON.stringify(accountManager.getStatus(), null, 2));
++        return;
++      }
++
++      // [local patch: reload-endpoint] Re-read the config from disk and apply
++      // account changes (enable/disable/priority/new accounts/credentials) to the
++      // running server, then force a fleet-wide quota re-measure — the same work
++      // as the TUI "R" key, but reachable via `teamclaude reload` against a
++      // headless server. `?resetAffinity=1` (used by `teamclaude switch`) also
++      // drops connection→account affinity so already-running sessions re-select
++      // on their next request instead of sticking to their previous account.
++      // Localhost is auth-exempt above, same as /status; remote callers still
++      // need the proxy API key.
++      if (req.method === 'POST' && req.url.split('?')[0] === '/teamclaude/reload') {
++        if (!hooks.reload) {
++          res.writeHead(501, { 'Content-Type': 'application/json' });
++          res.end(JSON.stringify({ error: 'reload hook not wired' }));
++          return;
++        }
++        try {
++          const result = await hooks.reload({ resetAffinity: /[?&]resetAffinity=1(&|$)/.test(req.url) });
++          res.writeHead(200, { 'Content-Type': 'application/json' });
++          res.end(JSON.stringify(result ?? {}));
++        } catch (err) {
++          res.writeHead(500, { 'Content-Type': 'application/json' });
++          res.end(JSON.stringify({ error: err?.message || String(err) }));
++        }
+         return;
+       }
+ 
