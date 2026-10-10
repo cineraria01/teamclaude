@@ -1987,8 +1987,11 @@ export function createProxyServer(accountManager, config, hooks = {}) {
 
         let agySessionKey = null;
         if (provider === 'agy') {
+          // Upstream answers 403 SUBSCRIPTION_REQUIRED to a non-agy user-agent,
+          // so another client (curl, the Selvi app) borrows the latest agy one.
           const userAgent = req.headers['user-agent'];
-          if (typeof userAgent === 'string' && userAgent) agyUserAgent = userAgent;
+          if (/^antigravity\//.test(userAgent)) agyUserAgent = userAgent;
+          else req.headers['user-agent'] = agyUserAgent || AGY_DEFAULT_USER_AGENT;
           if (sessionAffinity) agySessionKey = agyAffinityKey(req.url, body);
         }
 
@@ -3164,7 +3167,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
   // failover re-targets the next account; `body` itself stays the original.
   let dispatchBody = body;
   if (ctx.provider === 'agy') {
-    dispatchBody = rewriteAgyProject(body, account.projectId);
+    dispatchBody = rewriteAgyProject(body, account.projectId, isAgyInferencePath(req.url));
     if (dispatchBody !== body && headers['content-length'] != null) {
       headers['content-length'] = String(dispatchBody.length);
     }

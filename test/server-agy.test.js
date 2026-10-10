@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { AccountManager } from '../src/account-manager.js';
 import { createProxyServer } from '../src/server.js';
+import { AGY_DEFAULT_USER_AGENT } from '../src/agy.js';
 
 const HOUR = 60 * 60 * 1000;
 const AGY_UA = 'antigravity/cli/1.3.3 (aidev_client; os_type=darwin; arch=arm64; cl=1; auth_method=consumer)';
@@ -229,6 +230,62 @@ test('a MODEL_CAPACITY 429 fails over without throttling the account', async () 
     const [a] = manager.accounts;
     assert.equal(a.quota.agyGroups, undefined);
     assert.equal(manager._isAvailable(a, 'gemini-3.1-pro-high'), true);
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
+  }
+});
+
+test('another client (no agy user-agent, no project) gets an agy user-agent and the account project, failover included', async () => {
+  const route = (call, res) => {
+    if (call.headers.authorization === 'Bearer tok-a' && call.url.startsWith('/v1internal:streamGenerateContent')
+        && !route.failed) {
+      route.failed = true;
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(exhausted429('MODEL_CAPACITY_EXHAUSTED', '5s'));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"response":{}}');
+  };
+  const upstream = await agyUpstream(route);
+  const { proxy, url } = await agyProxy(
+    [agyAccount('a', { projectId: 'proj-a' }), agyAccount('b')], upstream.url);
+  const foreign = project => fetch(`${url}/v1internal:streamGenerateContent?alt=sse`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': 'curl/8.7.1', 'x-goog-api-key': 'app-key' },
+    body: JSON.stringify({
+      model: 'gemini-3.6-flash-low',
+      ...(project == null ? {} : { project }),
+      request: { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] },
+    }),
+  });
+  const projectOf = call => (call.headers.authorization === 'Bearer tok-a' ? 'proj-a' : 'aicode-consumers');
+  try {
+    assert.equal((await foreign()).status, 200);
+    assert.deepEqual(upstream.calls.map(call => [call.headers.authorization, call.headers['user-agent'],
+      call.headers['x-goog-api-key'], call.json.project]), [
+      ['Bearer tok-a', AGY_DEFAULT_USER_AGENT, undefined, 'proj-a'],
+      ['Bearer tok-b', AGY_DEFAULT_USER_AGENT, undefined, 'aicode-consumers'],
+    ]);
+
+    // agy's own call: user-agent and a project-less non-inference body stay as sent
+    const agyBody = '{"metadata":{"ideType":"ANTIGRAVITY"}}';
+    assert.equal((await fetch(`${url}/v1internal:loadCodeAssist`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': AGY_UA }, body: agyBody,
+    })).status, 200);
+    const load = upstream.calls.at(-1);
+    assert.equal(load.headers['user-agent'], AGY_UA);
+    assert.equal(load.body.toString(), agyBody);
+
+    // later foreign calls borrow the latest real agy user-agent; '' counts as no project
+    const before = upstream.calls.length;
+    assert.equal((await foreign('')).status, 200);
+    const later = upstream.calls.slice(before);
+    assert.ok(later.length > 0);
+    for (const call of later) {
+      assert.equal(call.headers['user-agent'], AGY_UA);
+      assert.equal(call.json.project, projectOf(call));
+    }
   } finally {
     await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
   }

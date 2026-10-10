@@ -298,6 +298,19 @@ test('project rewrite: equal and absent are byte-identical no-ops, a different p
   assert.deepEqual(JSON.parse(rewritten.toString()), { project: 'proj-b', model: 'gemini-3.6-flash-low' });
 });
 
+test('project fill (inference calls): a missing or empty project gets the account project, else the consumer one', () => {
+  const missing = Buffer.from('{"model":"gemini-3.6-flash-low"}');
+  assert.equal(rewriteAgyProject(missing, 'proj-b'), missing, 'no fill without the flag');
+  assert.deepEqual(JSON.parse(rewriteAgyProject(missing, 'proj-b', true)), { model: 'gemini-3.6-flash-low', project: 'proj-b' });
+  assert.deepEqual(JSON.parse(rewriteAgyProject(missing, null, true)), { model: 'gemini-3.6-flash-low', project: 'aicode-consumers' });
+  const empty = Buffer.from('{"project":"","model":"m"}');
+  assert.deepEqual(JSON.parse(rewriteAgyProject(empty, undefined, true)), { project: 'aicode-consumers', model: 'm' });
+  const same = Buffer.from('{"project":"proj-b"}');
+  assert.equal(rewriteAgyProject(same, 'proj-b', true), same);
+  const other = Buffer.from('{"project":"custom"}');
+  assert.equal(rewriteAgyProject(other, null, true), other, 'a project is kept when the account has none');
+});
+
 test('affinity key links a trajectory ACL write to its inference, else the session id', () => {
   assert.equal(agyAffinityKey('/v1internal:writeTrajectoryAcls', Buffer.from('{"trajectoryId":"traj-1"}')), 'trajectory:traj-1');
   assert.equal(agyAffinityKey(
