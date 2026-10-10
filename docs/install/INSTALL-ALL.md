@@ -2,7 +2,7 @@
 
 새 머신의 Claude Code(또는 Codex)에 이 문서 전체를 붙여 넣거나, 한 줄로 이렇게 시킨다:
 
-> https://raw.githubusercontent.com/cineraria01/teamclaude/main/docs/install/INSTALL-ALL.md 를 읽고 그 절차를 순서대로 수행해. 업스트림 저장소에서는 절대 설치하지 마.
+> https://raw.githubusercontent.com/cineraria01/teamproxy/main/docs/install/INSTALL-ALL.md 를 읽고 그 절차를 순서대로 수행해. 업스트림 저장소에서는 절대 설치하지 마.
 
 ---
 
@@ -12,11 +12,11 @@ GitHub `cineraria01` 계정의 포크에서만 가져온다.** `sangrokjung/team
 (같은 이름의 원본이지만 우리 수정이 없다). 다른 머신의 `~/.config/teamclaude.json`·
 `teamcodex.json`·`teamagy.json`(토큰 포함)을 복사해 오지 말고 이 머신에서 새로 로그인한다.
 
-구성요소 셋과 출처(모두 `cineraria01/teamclaude` 포크 하나에 있다):
+구성요소 셋과 출처(모두 `cineraria01/teamproxy` 포크 하나에 있다. 2026-10-10 저장소 이름을 `teamclaude`에서 `teamproxy`로 바꿨다):
 
 | 구성요소 | 저장소 | 설치 위치 |
 |---|---|---|
-| 프록시 본체(Claude :3456 · Codex :3457 · agy :3458, 세 프록시가 같은 코드) | `cineraria01/teamclaude` 브랜치 `main`의 최신 커밋(설치기가 브랜치 tip을 받는다) | 프록시마다 따로: `~/.local/share/{teamcodex,teamclaude,teamagy}-global/lib/node_modules/teamcodex` |
+| 프록시 본체(Claude :3456 · Codex :3457 · agy :3458, 세 프록시가 같은 코드) | `cineraria01/teamproxy` 브랜치 `main`의 최신 커밋(설치기가 브랜치 tip을 받는다) | 프록시마다 따로: `~/.local/share/{teamcodex,teamclaude,teamagy}-global/lib/node_modules/teamcodex` |
 | Codex·agy 실행기 + 하단 줄(`src/hud/`), 프록시 설치기(`scripts/install.py`) | 같은 포크(2026-10-10 옛 `cineraria01/teamcodex`를 합침) | 프록시 설치본 안 `…/node_modules/teamcodex/src/hud` |
 | Claude 상태라인 + 계정 선택기(`statusline/`) | 같은 포크(2026-10-10 옛 `cineraria01/teamclaude-statusline`을 합침) | `~/.claude/statusline-*.py`, `~/.claude/teamclaude-selector.sh` |
 
@@ -40,9 +40,9 @@ echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin" || echo 'PATH에 ~/.loca
 
 ```sh
 mkdir -p ~/src && cd ~/src
-git clone https://github.com/cineraria01/teamclaude.git
-cd teamclaude
-grep -n 'UPSTREAM' scripts/install_teamcodex.py   # cineraria01/teamclaude.git#main 인지 확인
+git clone https://github.com/cineraria01/teamproxy.git
+cd teamproxy
+grep -n 'UPSTREAM' scripts/install_teamcodex.py   # cineraria01/teamproxy.git#main 인지 확인
 python3 scripts/install.py
 ```
 
@@ -75,7 +75,7 @@ CLI는 자기 설치 폴더에서 뜬 서버만 알아본다. 래퍼의 경로�
 rsync -a ~/.local/share/teamcodex-global/ ~/.local/share/teamclaude-global/
 cat > ~/.local/bin/teamclaude <<EOF
 #!/bin/sh
-# Claude pool (:3456). Own install (~/.local/share/teamclaude-global), cineraria01/teamclaude fork.
+# Claude pool (:3456). Own install (~/.local/share/teamclaude-global), cineraria01/teamproxy fork.
 # No args or Claude flags open Claude Code through the pool (= teamclaude run -- …); a subcommand goes after --.
 case "\${1-}" in
   '') set -- run ;;
@@ -99,7 +99,7 @@ agy에서 한 번 로그인해 두어야 한다(프록시가 요청의 인증을
 rsync -a ~/.local/share/teamcodex-global/ ~/.local/share/teamagy-global/
 cat > ~/.local/bin/teamagy <<EOF
 #!/bin/sh
-# Antigravity (agy) pool (:3458). Own install (~/.local/share/teamagy-global), cineraria01/teamclaude fork.
+# Antigravity (agy) pool (:3458). Own install (~/.local/share/teamagy-global), cineraria01/teamproxy fork.
 if [ "\${1-}" = agy ]; then shift; fi
 PKG=\$HOME/.local/share/teamagy-global/lib/node_modules/teamcodex
 # No args or agy flags open agy with the account footer (src/hud/launcher.py --agy runs teamagy run -- …;
@@ -279,7 +279,7 @@ teamclaude status; teamcodex status; teamagy status
 `teamclaude`가 PATH에 있고 계정이 하나 이상 있어야 installer가 진행된다(§1-2·§2 완료 후).
 
 ```sh
-cd ~/src/teamclaude/statusline && NO_PROBE=1 NO_RELOAD_PATCH=1 ./install.sh   # §1에서 받은 포크
+cd ~/src/teamproxy/statusline && NO_PROBE=1 NO_RELOAD_PATCH=1 ./install.sh   # §1에서 받은 포크
 ```
 
 - `NO_PROBE=1`·`NO_RELOAD_PATCH=1`: `probe` 명령과 reload 패치는 karpeleslab 원본용이다. 포크

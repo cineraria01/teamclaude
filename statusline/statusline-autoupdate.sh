@@ -13,7 +13,7 @@ set -u
 
 # ponytail: the tip moves with every proxy commit, so this reinstalls the status line (idempotent) at most
 # once a day even when statusline/ is unchanged; compare a path-filtered commit if that ever matters.
-REPO="cineraria01/teamclaude"
+REPO="cineraria01/teamproxy"
 BRANCH="main"
 REPO_URL="https://github.com/$REPO"
 INSTALL_URL="https://raw.githubusercontent.com/$REPO/$BRANCH/statusline/install.sh"
