@@ -60,7 +60,7 @@ TeamClaude가 없거나 계정이 없으면 설치 스크립트는 Claude 설정
 ## 설치
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/qjc/resilient-routing/statusline/install.sh?$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline/install.sh?$(date +%s)" | bash
 ```
 
 또는 클론해서:
@@ -154,7 +154,7 @@ GitHub `main`의 최신 커밋을 확인하고, 설치본과 다를 때만 `inst
 ## 제거
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/qjc/resilient-routing/statusline/uninstall.sh?$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline/uninstall.sh?$(date +%s)" | bash
 ```
 
 스크립트, 선택기 소스 블록, 자신이 등록한 `statusLine` 항목(여전히 이 스크립트를 가리키는 경우에만)을 제거합니다. 이전에 쓰던 상태줄은 복원되고, 기존 셸 alias·설정은 보존됩니다. 라이브 리로드 패치도 백업으로 원복합니다. 쿼터 프로브는 그대로 두며 `teamclaude probe off`로 끌 수 있습니다.
@@ -216,7 +216,7 @@ teamclaude builds without `status --json` (e.g. the [jung-wan-kim/teamclaude](ht
 ### Install
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/qjc/resilient-routing/statusline/install.sh?$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline/install.sh?$(date +%s)" | bash
 ```
 
 Or from a clone:
@@ -313,7 +313,7 @@ The refresh interval (default 30s even when idle) lives in the `statusLine.refre
 ### Uninstall
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/qjc/resilient-routing/statusline/uninstall.sh?$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/cineraria01/teamclaude/main/statusline/uninstall.sh?$(date +%s)" | bash
 ```
 
 Removes the scripts, selector source block, and the `statusLine` entry it registered (only if it still points at this script). A previously configured status line is restored, and existing shell aliases/settings are preserved. The live-reload patch is reverted from its backup. The quota probe is left as-is; `teamclaude probe off` disables it.

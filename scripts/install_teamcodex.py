@@ -8,7 +8,7 @@ from typing import Final
 
 # Owner fork only (never the sangrokjung/jung-wan-kim/karpeleslab originals): the fork's
 # default branch carries every local fix, so install its tip rather than a pinned commit.
-UPSTREAM: Final = 'git+https://github.com/cineraria01/teamclaude.git#qjc/resilient-routing'
+UPSTREAM: Final = 'git+https://github.com/cineraria01/teamclaude.git#main'
 
 # TeamCodex puts its provider routing in root `-c` overrides before the user's arguments. Codex drops
 # those when a `-c` follows `exec`, sends the request with its own login and fails with

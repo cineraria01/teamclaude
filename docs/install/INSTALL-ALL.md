@@ -2,7 +2,7 @@
 
 새 머신의 Claude Code(또는 Codex)에 이 문서 전체를 붙여 넣거나, 한 줄로 이렇게 시킨다:
 
-> https://raw.githubusercontent.com/cineraria01/teamclaude/qjc/resilient-routing/docs/install/INSTALL-ALL.md 를 읽고 그 절차를 순서대로 수행해. 업스트림 저장소에서는 절대 설치하지 마.
+> https://raw.githubusercontent.com/cineraria01/teamclaude/main/docs/install/INSTALL-ALL.md 를 읽고 그 절차를 순서대로 수행해. 업스트림 저장소에서는 절대 설치하지 마.
 
 ---
 
@@ -16,7 +16,7 @@ GitHub `cineraria01` 계정의 포크에서만 가져온다.** `sangrokjung/team
 
 | 구성요소 | 저장소 | 설치 위치 |
 |---|---|---|
-| 프록시 본체(Claude :3456 · Codex :3457 · agy :3458, 세 프록시가 같은 코드) | `cineraria01/teamclaude` 브랜치 `qjc/resilient-routing`의 최신 커밋(설치기가 브랜치 tip을 받는다) | 프록시마다 따로: `~/.local/share/{teamcodex,teamclaude,teamagy}-global/lib/node_modules/teamcodex` |
+| 프록시 본체(Claude :3456 · Codex :3457 · agy :3458, 세 프록시가 같은 코드) | `cineraria01/teamclaude` 브랜치 `main`의 최신 커밋(설치기가 브랜치 tip을 받는다) | 프록시마다 따로: `~/.local/share/{teamcodex,teamclaude,teamagy}-global/lib/node_modules/teamcodex` |
 | Codex·agy 실행기 + 하단 줄(`src/hud/`), 프록시 설치기(`scripts/install.py`) | 같은 포크(2026-10-10 옛 `cineraria01/teamcodex`를 합침) | 프록시 설치본 안 `…/node_modules/teamcodex/src/hud` |
 | Claude 상태라인 + 계정 선택기(`statusline/`) | 같은 포크(2026-10-10 옛 `cineraria01/teamclaude-statusline`을 합침) | `~/.claude/statusline-*.py`, `~/.claude/teamclaude-selector.sh` |
 
@@ -42,7 +42,7 @@ echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin" || echo 'PATH에 ~/.loca
 mkdir -p ~/src && cd ~/src
 git clone https://github.com/cineraria01/teamclaude.git
 cd teamclaude
-grep -n 'UPSTREAM' scripts/install_teamcodex.py   # cineraria01/teamclaude.git#qjc/resilient-routing 인지 확인
+grep -n 'UPSTREAM' scripts/install_teamcodex.py   # cineraria01/teamclaude.git#main 인지 확인
 python3 scripts/install.py
 ```
 

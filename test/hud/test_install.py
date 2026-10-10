@@ -20,7 +20,7 @@ from pathlib import Path
 import sys
 assert sys.argv[1:4] == ['install', '--global', '--prefix']
 assert sys.argv[5] == '--ignore-scripts'
-assert sys.argv[6] == 'git+https://github.com/cineraria01/teamclaude.git#qjc/resilient-routing', sys.argv[6]
+assert sys.argv[6] == 'git+https://github.com/cineraria01/teamclaude.git#main', sys.argv[6]
 entry = Path(sys.argv[4]) / 'lib/node_modules/teamcodex/src/index.js'
 entry.parent.mkdir(parents=True)
 entry.write_text('unused test entry')
