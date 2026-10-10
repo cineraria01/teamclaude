@@ -15,7 +15,8 @@ language of its file.
 | [`plans/`](plans/) | The implementation plan paired with a spec of the same date and topic: scope, explicit non-scope, task checklist |
 | [`runbooks/`](runbooks/) | Symptom-first operational procedures. Read-only diagnosis first, recovery second, prevention last |
 | [`evidence/`](evidence/) | Frozen excerpts with source SHA-256 hashes, so an independent reviewer can check a claim without pulling whole files into a review bundle |
-| [`assets/`](assets/) | Images referenced by the READMEs (hero, dashboard screenshot) |
+| [`assets/`](assets/) | Images referenced by the READMEs (hero, dashboard screenshot, footer preview) |
+| [`install/`](install/) | New-machine install guide for all three pools and both status lines (`INSTALL-ALL.md`, Korean), Codex/agy footer (`HUD.md`), proxy setup (`SETUP.md`). Moved here 2026-10-10 from the former `cineraria01/teamcodex` repo |
 
 Operational context for the production deployment is summarized in the
 [README's Operations section](../README.md#operations).

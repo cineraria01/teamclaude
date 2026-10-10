@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="640" viewBox="0 0 1000 640">
+<rect width="1000" height="640" rx="12" fill="#111318"/>
+<text x="24" y="32" fill="#c7d2fe" font-family="monospace" font-size="16">teamcodex — terminal capture (path sanitized)</text>
+<text x="24" y="68" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">  https://chatgpt.com/codex?app-landing-page=true</text>
+<text x="24.0" y="137" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">› </text>
+<text x="47.6" y="137" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">Remember the exact code DAL-5931. Reply only READY. Do not use tools.</text>
+<text x="24.0" y="206" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">• </text>
+<text x="47.6" y="206" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">READY</text>
+<text x="24.0" y="275" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">› </text>
+<text x="47.6" y="275" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">What exact code did I ask you to remember? Reply with that code only. Do not</text>
+<text x="24" y="298" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">  use tools.</text>
+<text x="24.0" y="367" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">• </text>
+<text x="47.6" y="367" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">DAL-5931</text>
+<text x="24.0" y="436" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">›</text>
+<text x="35.8" y="436" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> </text>
+<text x="47.599999999999994" y="436" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">Ask Codex to do anything</text>
+<text x="24" y="482" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">  </text>
+<text x="47.6" y="482" fill="#f6e2b7" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">gpt-6-astra default</text>
+<text x="271.8" y="482" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> · </text>
+<text x="307.20000000000005" y="482" fill="#abdfa7" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">~/project</text>
+<text x="24" y="505" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">────────────────────────────────────────────────────────────────────────────────</text>
+<text x="24.0" y="528" fill="#22d3ee" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">TeamCodex | 2 accounts | switch 98% | &gt; selected, * busy</text>
+<text x="24.0" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">  FLEET      x2       avg  </text>
+<text x="342.6" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 5h </text>
+<rect x="389.8" y="534" width="118.0" height="23" fill="#374151"/>
+<text x="389.8" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">    -     </text>
+<text x="507.8" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 7d </text>
+<rect x="555.0" y="534" width="35.400000000000006" height="23" fill="#22c55e"/>
+<text x="555.0" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 34</text>
+<rect x="590.4" y="534" width="82.60000000000001" height="23" fill="#374151"/>
+<text x="590.4" y="551" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">% 5d5h </text>
+<text x="24.0" y="574" fill="#22c55e" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">&gt; 1.codex-1  pro      ready</text>
+<text x="342.6" y="574" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 5h </text>
+<rect x="389.8" y="557" width="118.0" height="23" fill="#374151"/>
+<text x="389.8" y="574" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">    -     </text>
+<text x="507.8" y="574" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 7d </text>
+<rect x="555.0" y="557" width="82.60000000000001" height="23" fill="#22c55e"/>
+<text x="555.0" y="574" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 69% 5d</text>
+<rect x="637.6" y="557" width="35.400000000000006" height="23" fill="#374151"/>
+<text x="637.6" y="574" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">5h </text>
+<text x="24.0" y="597" fill="#eab308" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">  2.codex-2  pro      ready</text>
+<text x="342.6" y="597" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 5h </text>
+<rect x="389.8" y="580" width="118.0" height="23" fill="#374151"/>
+<text x="389.8" y="597" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18">    -     </text>
+<text x="507.8" y="597" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 7d </text>
+<rect x="555.0" y="580" width="118.0" height="23" fill="#374151"/>
+<text x="555.0" y="597" fill="#e5e7eb" xml:space="preserve" font-family="Menlo,Consolas,monospace" font-size="18"> 0% 6d23h </text>
+</svg>

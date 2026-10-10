@@ -1,0 +1,161 @@
+--- a/src/index.js
++++ b/src/index.js
+@@ -22,6 +22,14 @@
+     break;
+   case 'restart':
+     await restartCommand();
++    break;
++  case 'reload':
++    await reloadCommand();
++    process.exit(0);
++    break;
++  case 'switch':
++    await switchCommand();
++    process.exit(0);
+     break;
+   case 'run':
+     await runCommand();
+@@ -254,6 +262,29 @@
+   }
+ 
+   const server = createProxyServer(accountManager, config, hooks);
++  // [local patch: reload-endpoint] Expose the TUI "R" reload as a server hook so
++  // `teamclaude reload` can apply disk-config changes to a headless server
++  // without a restart. Assigned after createProxyServer on purpose: the server
++  // captured the same `hooks` object, and `server.refreshQuotaAll` only exists
++  // once the server is constructed. Mirrors tui.js _doSync (sync first, then
++  // re-measure quota with just-refreshed credentials).
++  hooks.reload = async (opts = {}) => {
++    const diskConfig = await loadConfig();
++    let added = 0;
++    if (diskConfig) added = await syncAccountsFromDisk(diskConfig, config, accountManager);
++    if (opts.resetAffinity) {
++      // Break connection→account affinity so sessions that are already running
++      // re-select (and re-pin) on their next request instead of sticking to
++      // their previous account. Private-field poke on purpose: AccountManager
++      // has no public reset, and adding one would grow the patch to a third
++      // file. The map only serves cache locality — dropping it is always safe.
++      accountManager._affinity = new WeakMap();
++    }
++    let quotaProbed = null;
++    try { quotaProbed = await server.refreshQuotaAll(); } catch { /* best-effort */ }
++    console.log(`[TeamClaude] Config reloaded via /teamclaude/reload (${added} new account(s)${opts.resetAffinity ? ', affinity reset' : ''})`);
++    return { added, accounts: accountManager.accounts.length, quotaProbed };
++  };
+   // Restore the last run's committed probe template alongside the quota
+   // snapshot, so forced re-measure (TUI R) and warm-up probes work on a
+   // freshly restarted idle proxy — without this the template is memory-only
+@@ -938,11 +969,102 @@
+ }
+ 
+ // ── enable / disable / priority ─────────────────────────────
++
++// [local patch: reload-endpoint] Apply disk-config changes to a running server
++// in place, via POST /teamclaude/reload. Returns true when a server handled it.
++async function requestServerReload(config, opts = {}) {
++  const running = await findRunningServer(config);
++  if (!running) return { state: 'not-running' };
++  let res;
++  try {
++    const query = opts.resetAffinity ? '?resetAffinity=1' : '';
++    res = await fetch(`http://127.0.0.1:${running.port}/teamclaude/reload${query}`, { method: 'POST' });
++  } catch (err) {
++    return { state: 'unreachable', detail: err.message };
++  }
++  if (res.status === 404) return { state: 'unsupported' }; // server predates the patch
++  if (!res.ok) return { state: 'failed', detail: `HTTP ${res.status}` };
++  const body = await res.json().catch(() => ({}));
++  return { state: 'ok', body };
++}
++
++async function reloadCommand() {
++  const config = await loadConfig();
++  if (!config) { console.error('No config found.'); process.exit(1); }
++  const r = await requestServerReload(config);
++  switch (r.state) {
++    case 'not-running':
++      console.log('No running server — nothing to reload (start one with: teamclaude server).');
++      return;
++    case 'unsupported':
++      console.error('The running server predates the reload endpoint — restart once: teamclaude restart');
++      process.exit(1);
++      break;
++    case 'unreachable':
++    case 'failed':
++      console.error(`Reload failed: ${r.detail}`);
++      process.exit(1);
++      break;
++    case 'ok': {
++      const added = r.body?.added || 0;
++      console.log(added > 0
++        ? `Reloaded config — picked up ${added} new account(s).`
++        : 'Reloaded config — enable/disable/priority/credential changes applied.');
++      if (r.body?.quotaProbed === -1 || r.body?.quotaProbed == null) {
++        console.log('  (quota re-measure skipped — no request has flowed through the proxy yet)');
++      }
++      return;
++    }
++  }
++}
+ 
++// [local patch: reload-endpoint] Make one account the preferred target NOW:
++// enable it, give it priority 1, return every other account to automatic
++// ordering, and reset connection affinity on the running server so sessions
++// that are already running move over on their next request. Accepts the
++// account number (in `teamclaude accounts` order) or the account name.
++async function switchCommand() {
++  const target = args[1];
++  if (!target) {
++    console.error('Usage: teamclaude switch <number|account-name>');
++    console.error('  Numbers follow the `teamclaude accounts` order.');
++    process.exit(1);
++  }
++  let name = null;
++  const config = await atomicConfigUpdate(cfg => {
++    const acct = /^\d+$/.test(target)
++      ? (cfg.accounts[Number(target) - 1] || null)
++      : (cfg.accounts.find(a => a.name === target) || null);
++    if (!acct) return;
++    name = acct.name;
++    for (const a of cfg.accounts) {
++      if (a === acct) { delete a.enabled; a.priority = 1; }
++      else if (a.priority !== undefined) delete a.priority; // back to auto ordering
++    }
++  });
++  if (!name) { console.error(`Account not found: ${target}`); process.exit(1); }
++  console.log(`Switched preferred account to "${name}" (enabled, priority 1; others on auto order).`);
++  const r = await requestServerReload(config, { resetAffinity: true });
++  if (r.state === 'ok') {
++    console.log('Applied to the running server — running sessions move over on their next request.');
++  } else if (r.state === 'not-running') {
++    console.log('No running server; takes effect when one starts.');
++  } else if (r.state === 'unsupported') {
++    console.log('The running server predates the reload endpoint — restart once: teamclaude restart');
++  } else {
++    console.log(`Could not apply live (${r.detail || r.state}) — apply with: teamclaude restart`);
++  }
++}
++
+ /** Note that changes apply to a running server only after a reload/restart. */
+ function noteRunningServerReload(config) {
+-  return findRunningServer(config).then(running => {
+-    if (running) {
++  // [local patch: reload-endpoint] Instead of telling the user to restart, apply
++  // the change to the running server right away. Falls back to the old hint when
++  // the running server doesn't have the endpoint (pre-patch process).
++  return requestServerReload(config).then(r => {
++    if (r.state === 'ok') {
++      console.log('Applied to the running server (no restart needed).');
++    } else if (r.state !== 'not-running') {
+       console.log('A server is running — apply now with: teamclaude restart');
+       console.log('  (or press "R" in the TUI to reload from config).');
+     }
+@@ -1008,6 +1130,8 @@
+   server              Start the proxy server (default)
+   stop                Stop the running proxy server
+   restart             Stop the running server (if any) and start a fresh one
++  reload              Apply config changes to the running server (no restart)
++  switch <n|name>     Prefer this account now (enable + priority 1 + move running sessions)
+   import              Import credentials from Claude Code
+   login               OAuth login via browser
+   login --api         Add an API key account

@@ -86,6 +86,14 @@ Single CLI binary (`src/index.js`) dispatches subcommands; `server` boots the pr
 - **Stickiness** (agy keeps server-side state per account): `reevalIntervalMs` defaults to 0, agy accounts are always "measured" (no warm-up hopping), affinity is keyed by trajectory id (ACL write ↔ `requestId` 4th segment) else `request.sessionId` else socket, and new configs default `maxConcurrentPerAccount` to 8. The account changes only when it cannot serve the request's group.
 - **Not offered:** reauth, subscription, api, reset credits, resume, cmux, BYOK-specific paths, Gemini CLI / API-key / Vertex, login-free ADC. Remote clients still need the proxy key at the supervisor, which agy cannot send — effectively loopback-only. Tests: `test/agy*.test.js`, `test/server-agy.test.js`.
 
+### Footers and status lines (`src/hud/`, `statusline/`, qjc fork)
+
+Python, outside the Node runtime (merged 2026-10-10 from the former `cineraria01/teamcodex` and `cineraria01/teamclaude-statusline` repos):
+
+- **`src/hud/`** ships inside every pool install. `launcher.py` opens Codex (`teamcodex`) or agy (`teamagy` passes `--agy`) in a private tmux socket (`teamcodex-hud`/`teamagy-hud`) with `statusline.py --watch` as a footer pane reading `GET /teamclaude/status`. agy print mode and non-terminal runs skip the footer. `codex_login.py` is the browser-callback-paste Codex login.
+- **`statusline/`** is the Claude Code status line, installed into `~/.claude` by `statusline/install.sh` (raw URLs point at this branch). Not part of the npm package.
+- `scripts/install.py` installs the Codex pool + wrapper on a new machine; `docs/install/` holds the full new-machine guide. Tests: `npm run test:hud` (`test_lifecycle.py` needs tmux).
+
 ### Request flow (`forwardRequest` in server.js)
 
 0. The supervisor in `src/index.js` owns the public port and buffers each request under the same admission/body bounds before forwarding it to the worker's loopback-only listener. If that worker dies before response headers, the request waits for the replacement worker and is retried (bounded); the public listener never disappears. If the worker dies MID-response: an SSE relay (with `streamRecovery` on) is framed to whole events, so the supervisor ends the client's response with the synthetic retryable `overloaded_error` event (see "Mid-stream SSE recovery" below) and the client's own retry lands on the replacement worker; a non-SSE mid-response death still destroys the client socket (partial JSON is not salvageable).
