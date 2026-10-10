@@ -10,8 +10,6 @@
   },
   "files": [
     "src/",
-    "README.ko.md",
-    "README.zh-CN.md",
     "config.example.json",
     "config.codex.example.json"
   ],

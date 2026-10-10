@@ -91,7 +91,7 @@ npm 레지스트리의 `teamcodex`. 이름은 같지만 이 포크의 수정이 
 | `--` | 뒤의 것은 CLI 하위 명령. 하단 줄 없이 실행한다 |
 | 그 밖의 낱말(`server`, `status`, `accounts`, `login`, `import`, `enable`, `disable`, `priority`, `reload`, `run`, `env`, `remove` …)과 `-h`/`--help` | 프록시 명령 |
 
-하단 줄 없이 바로 실행하는 경우: 인쇄 모드(`-p`/`--print`, agy는 `--prompt`도), 터미널이 아닌 실행,
+하단 줄 없이 바로 실행하는 경우: 인쇄 모드(`-p`/`--print`, agy는 `--prompt`도)와 `--version`, 터미널이 아닌 실행,
 높이가 계정 수 + 12줄보다 낮은 창. 폭이 좁은 창은 하단 줄 오른쪽이 잘린다.
 창을 닫으면 CLI 세션도 끝난다. `--keep-alive`를 첫 인자로 주면 남고, `tmux -L <풀>-hud attach`로 다시 붙는다.
 
@@ -135,11 +135,14 @@ teamcodex run -- -c model_reasoning_effort=high \
 
 하단 줄은 CLI 화면 아래 tmux 칸에서 자기 풀의 `GET /teamclaude/status`를 2초마다 읽어 계정 행을 그린다.
 tmux 소켓은 풀마다 따로(`teamclaude-hud`·`teamcodex-hud`·`teamagy-hud`)라 평소 쓰는 tmux와 섞이지 않는다.
+이 tmux 서버는 [`src/hud/tmux.conf`](src/hud/tmux.conf)로 뜬다. Esc는 지연 없이 CLI에 가고(실행 중인 턴 중단), 스크롤 기록은 5만 줄이다.
+Shift+Enter는 그 CLI가 줄바꿈으로 읽는 키로 바꿔 보낸다(Claude Code·agy는 Alt+Enter, Codex는 Ctrl+J). 바깥 터미널이 Shift+Enter를
+따로 보내야 한다. 마우스로 글자를 고를 때는 option(macOS)이나 shift를 누른 채 끈다.
 계정이 둘 이상이면 맨 위에 FLEET(평균) 행이 붙는다.
 
 | 풀 | 계정 행의 막대 |
 |---|---|
-| teamclaude | `5h` · `7d` · `Fbl`(Fable 주간) · `End`(구독 종료일) |
+| teamclaude | `Ses`(5h) · `Wk`(7d) · `Fbl`(Fable 주간) · `End`(다음 결제일 추정, 장기 토큰 계정은 `-`). Claude 상태줄이 그리는 표를 그대로 쓴다 |
 | teamcodex | `5h` · `7d` · `End`, 맨 아래 `Cache last`(그 창의 최근 요청 캐시 비율) |
 | teamagy | `5h` · `7d`(Gemini 그룹) · `3p`(Claude/GPT 그룹에서 더 찬 창) |
 
