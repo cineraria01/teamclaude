@@ -254,6 +254,15 @@ assert lines[5] == "\u2800"
 assert lines[6].startswith("  2. two@example.c")
 assert len(lines) == 7
 assert len({line.index("Ses") for line in lines[2::2]}) == 1
+# Under the tmux account footer (TEAMCLAUDE_HUD) only the model line stays; the footer shows the table.
+os.environ["TEAMCLAUDE_HUD"] = "1"
+sys.stdin = io.StringIO('{"model":{"display_name":"Fable 5"}}')
+output = io.StringIO()
+sys.stdout = output
+gapped.main()
+sys.stdout = sys.__stdout__
+os.environ.pop("TEAMCLAUDE_HUD")
+assert output.getvalue() == "Fable 5\n", output.getvalue()
 os.environ.pop("TC_SL_ROW_GAP")
 packed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packed)

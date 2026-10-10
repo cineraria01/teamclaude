@@ -68,7 +68,14 @@ PY
 selected=$(HOME="$TEST_HOME" PATH="$TEST_BIN:$PATH" \
   bash --noprofile --rcfile "$TEST_HOME/.bashrc" -ic 'claude 2 --continue' 2>/dev/null)
 grep -q 'TeamClaude #2: two@example.com' <<< "$selected"
-grep -q 'PIN=two@example.com INDEX=2 ARGS=run -- --continue' <<< "$selected"
+grep -q 'PIN=two@example.com INDEX=2 ARGS=--continue' <<< "$selected"
+# Flags open the footer launcher (`teamclaude …`); a first word is a Claude subcommand (`teamclaude -- …`).
+routed=$(HOME="$TEST_HOME" PATH="$TEST_BIN:$PATH" \
+  bash --noprofile --rcfile "$TEST_HOME/.bashrc" -ic 'claude; claude -c; claude mcp list; claude 2 mcp list' 2>/dev/null)
+grep -qx 'PIN= INDEX= ARGS=' <<< "$routed"
+grep -qx 'PIN= INDEX= ARGS=-c' <<< "$routed"
+grep -qx 'PIN= INDEX= ARGS=-- mcp list' <<< "$routed"
+grep -qx 'PIN=two@example.com INDEX=2 ARGS=-- mcp list' <<< "$routed"
 
 updated=$(HOME="$TEST_HOME" PATH="$TEST_BIN:$PATH" \
   bash --noprofile --rcfile "$TEST_HOME/.bashrc" -ic 'claude update' 2>/dev/null)

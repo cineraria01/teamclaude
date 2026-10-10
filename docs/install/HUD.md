@@ -1,4 +1,4 @@
-# teamcodex · teamagy 하단 줄
+# teamclaude · teamcodex · teamagy 하단 줄
 
 2026-10-10부터 프록시 포크 `cineraria01/teamproxy`의 `src/hud/`에 들어 있습니다(옛 `cineraria01/teamcodex`, 그 전 `tcodex` 저장소를 합침).
 프록시 설치본마다 함께 들어가므로 따로 설치하지 않습니다. Claude Code 상태줄은 같은 포크의 [`statusline/`](../../statusline/README.md)입니다.
@@ -33,6 +33,29 @@ Cache last: 98.9% | 148,864/150,566 in | new 1,702
 첫 요청 전처럼 세션 로그나 사용량 기록이 아직 없으면 `waiting for usage`를 표시합니다.
 대화를 하나로 식별할 수 없거나 로그 읽기·사용량 검증에 실패하면 `unavailable`을 표시합니다.
 이 표시는 `lsof`와 `ps`가 필요하며, `statusline.py` 단독 실행에는 나타나지 않습니다.
+
+### teamclaude (Claude 풀)
+
+`teamclaude`와 `claude` 함수(계정 선택기)도 같은 실행기를 씁니다(래퍼가 `launcher.py --claude`로 부름, 2026-10-10).
+인자 없이 또는 Claude 옵션만 주면 Claude Code 아래에 계정 줄이 붙습니다. 줄은 Claude Code 상태줄
+(`~/.claude/statusline-teamclaude.py`, [`statusline/`](../../statusline/README.md))이 그리는 표 그대로이고 2초마다 갱신합니다.
+하단 줄 안에서 뜬 Claude Code에는 `TEAMCLAUDE_HUD=1`이 붙어, Claude 안의 상태줄은 표를 숨기고 모델 줄만 보입니다.
+인쇄 모드(`-p`·`--print`)·`--version`, 터미널이 아닌 실행은 하단 줄 없이 바로 가고, Claude 하위 명령은 `teamclaude -- mcp list`
+(`claude mcp list`)처럼 하단 줄 없이 실행됩니다. `claude N`은 N번 계정에 고정하고 하단 줄에도 그 계정에 `>`가 붙습니다.
+tmux 소켓은 `teamclaude-hud`입니다.
+
+```text
+     FLEET         x5      pooled  Ses    2% 9m     Wk   51% 4h9m   Fbl      -
+> 2. lt-2                  active  Ses   10% 4h9m   Wk    60% 3d    Fbl      -       End       -
+  1. lt-1                  active  Ses   0% 1h29m   Wk   0% 6d23h   Fbl      -       End       -
+```
+
+### 세 하단 줄 공통 tmux 설정
+
+하단 줄 tmux 서버는 [`src/hud/tmux.conf`](../../src/hud/tmux.conf)로 뜹니다(평소 tmux 설정과 무관). Esc가 바로 CLI에 가고
+(`escape-time 0`), 스크롤 기록은 5만 줄입니다. Shift+Enter는 tmux가 CLI 쪽 방식 그대로 넘기지 못해 풀마다 그 CLI가 줄바꿈으로 읽는
+키로 바꿔 보냅니다(Claude Code·agy는 Alt+Enter, Codex는 Ctrl+J). 바깥 터미널이 Shift+Enter를 따로 보내야(확장 키) 동작합니다.
+마우스로 글자를 고를 때는 option(macOS)이나 shift를 누른 채 끕니다.
 
 ### teamagy (Antigravity agy 풀)
 

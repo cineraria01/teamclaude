@@ -1,6 +1,8 @@
 # Numbered account selector for teamclaude-statusline.
 # Sourced by Bash/Zsh; `claude` keeps automatic rotation and `claude N` pins
 # the new session to account N in `teamclaude status --json` order.
+# Like `teamclaude`: no arguments or Claude flags open Claude Code with the tmux
+# account footer; a first word (a Claude subcommand) runs directly, without it.
 
 unalias claude 2>/dev/null || true
 
@@ -15,8 +17,12 @@ claude() {
             command claude "$@"
             return
             ;;
-        ''|*[!0-9]*)
-            command teamclaude run -- "$@"
+        ''|-*)
+            command teamclaude "$@"
+            return
+            ;;
+        *[!0-9]*)
+            command teamclaude -- "$@"
             return
             ;;
     esac
@@ -67,6 +73,10 @@ print(accounts[index].get("name", "") if 0 <= index < len(accounts) else "")
     fi
 
     printf 'TeamClaude #%s: %s\n' "$number" "$account"
+    case "${1:-}" in
+        ''|-*) ;;
+        *) set -- -- "$@" ;;
+    esac
     TEAMCLAUDE_STATUSLINE_INDEX="$number" TC_ACCT="$account" \
-        command teamclaude run -- "$@"
+        command teamclaude "$@"
 }
