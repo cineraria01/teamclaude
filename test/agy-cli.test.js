@@ -282,7 +282,7 @@ test('agy and Claude/Codex never share a config file; the refusal writes nothing
     const agyOnClaude = await runCli(['agy', 'import', '--file', loginFile],
       isolatedEnv(dir, { TEAMCLAUDE_CONFIG: claudeConfig, TEAMAGY_AGY_BIN: join(dir, 'none') }));
     assert.equal(agyOnClaude.status, 1);
-    assert.match(agyOnClaude.stderr, /"anthropic" config, not an Antigravity/);
+    assert.match(agyOnClaude.stderr, /not an Antigravity \(agy\) config \(provider: "anthropic"\)/);
     assert.equal(await readFile(claudeConfig, 'utf8'), claudeBody);
 
     const envAgyOnClaude = await runCli(['status'], isolatedEnv(dir, { TEAMCLAUDE_CONFIG: claudeConfig, TEAMCLAUDE_PROVIDER: 'agy' }));
@@ -334,6 +334,59 @@ test('a name match with another Google account does not inherit its tier or proj
     assert.equal(account.priority, 0, 'routing settings of the slot are kept');
   } finally {
     await new Promise(resolve => upstream.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a provider-less Claude config is never touched in agy mode (prefix or env); a missing file is created as agy', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-claude-config-'));
+  const claudeConfig = join(dir, 'teamclaude.json');
+  const loginFile = join(dir, 'login.json');
+  const fakeAgy = join(dir, 'agy');
+  // The shape of a real Claude config: no provider key, accounts without one.
+  const claudeBody = `${JSON.stringify({
+    proxy: { port: await freePort(), apiKey: 'tc-claude' },
+    upstream: 'https://api.anthropic.com',
+    accounts: [
+      { name: 'one@example.com', type: 'oauth', accessToken: 'sk-ant-oat-1', refreshToken: 'r1', expiresAt: 1 },
+      { name: 'two@example.com', type: 'oauth', accessToken: 'sk-ant-oat-2', refreshToken: 'r2', expiresAt: 1 },
+      { name: 'api-1', type: 'apikey', apiKey: 'sk-ant-api-1' },
+    ],
+  }, null, 2)}\n`;
+  try {
+    await writeFile(claudeConfig, claudeBody);
+    await writeFile(loginFile, JSON.stringify(login('ya29.x')));
+    await writeFile(fakeAgy, '#!/bin/sh\necho must-not-run\n');
+    await chmod(fakeAgy, 0o755);
+    const base = { TEAMCLAUDE_CONFIG: claudeConfig, TEAMAGY_AGY_BIN: fakeAgy };
+    const attempts = [
+      [['agy', 'import', '--file', loginFile], base],
+      [['agy', 'stop'], base],
+      [['agy', 'restart'], base],
+      [['agy', 'run'], base],
+      [['import', '--file', loginFile], { ...base, TEAMCLAUDE_PROVIDER: 'agy' }],
+      [['stop'], { ...base, TEAMCLAUDE_PROVIDER: 'agy' }],
+      [['run'], { ...base, TEAMCLAUDE_PROVIDER: 'agy' }],
+    ];
+    for (const [argv, extra] of attempts) {
+      const result = await runCli(argv, isolatedEnv(dir, extra));
+      const label = `${extra.TEAMCLAUDE_PROVIDER ? 'env ' : ''}${argv.join(' ')}`;
+      assert.equal(result.status, 1, label);
+      assert.match(result.stderr, /not an Antigravity \(agy\) config \(provider: unset\)/, label);
+      assert.doesNotMatch(result.stdout, /must-not-run/, label);
+      assert.equal(await readFile(claudeConfig, 'utf8'), claudeBody, `${label} left the file byte-identical`);
+    }
+    assert.equal(await readFile(join(dir, 'teamclaude.server.json'), 'utf8').catch(() => null), null,
+      'no server was started against it');
+
+    // No file at all: agy mode creates an agy config.
+    const fresh = join(dir, 'fresh', 'teamagy.json');
+    const created = await runCli(['agy', 'accounts'], isolatedEnv(dir, { TEAMCLAUDE_CONFIG: fresh }));
+    assert.equal(created.status, 0, created.stderr);
+    const config = JSON.parse(await readFile(fresh, 'utf8'));
+    assert.equal(config.provider, 'agy');
+    assert.equal(config.proxy.port, 3458);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

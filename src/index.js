@@ -198,13 +198,23 @@ if (AGY_MODE && AGY_UNSUPPORTED_COMMANDS.has(command)) {
   process.exit(1);
 }
 // An agy pool and a Claude/Codex pool never share a config file: refuse the
-// mismatch before any command writes it, reloads a server, or starts one.
-// (Only combinations involving agy; Claude ⇄ Codex keeps its old behavior.)
+// mismatch before any command writes it, reloads a server, or starts one. In
+// agy mode an existing file must say `provider: "agy"` — a Claude config
+// usually has no provider key at all — and only a missing file is created
+// (as an agy config). Outside agy mode only an agy config is refused, so
+// Claude ⇄ Codex keeps its old behavior.
 if (command !== 'help' && command !== '--help' && command !== '-h') {
-  const configuredProvider = (await loadConfig().catch(() => null))?.provider;
-  if (agyConfigMismatch(configuredProvider, AGY_MODE)) {
+  let onDisk = null;
+  let configExists = false;
+  try {
+    onDisk = await loadConfig();
+    configExists = onDisk != null;
+  } catch {
+    configExists = true; // present but unreadable: never an agy config we can vouch for
+  }
+  if (agyConfigMismatch(onDisk?.provider, AGY_MODE, configExists)) {
     console.error(AGY_MODE
-      ? `[TeamAgy] ${getConfigPath()} is a "${configuredProvider}" config, not an Antigravity (agy) one — refusing to use it.\n`
+      ? `[TeamAgy] ${getConfigPath()} is not an Antigravity (agy) config (provider: ${onDisk?.provider ? `"${onDisk.provider}"` : 'unset'}) — refusing to use it.\n`
         + 'Point TEAMCLAUDE_CONFIG at the agy config (e.g. ~/.config/teamagy.json), or use the teamagy wrapper.'
       : `[TeamClaude] ${getConfigPath()} is an Antigravity (agy) config — refusing to use it outside agy mode.\n`
         + 'Run it with the agy prefix: teamagy …, or node src/index.js agy ….');
@@ -1549,8 +1559,8 @@ async function proxyWorkerCommand() {
       syncAccounts: async () => {
         const diskConfig = await accountManager.readAfterAccountFlagWrites(() => loadConfig());
         if (!diskConfig) return 0;
-        if (agyConfigMismatch(diskConfig.provider, agyMode)) {
-          throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider}" config; not reloading it`);
+        if (agyConfigMismatch(diskConfig.provider, agyMode, true)) {
+          throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider ?? 'unset'}" provider config; not reloading it`);
         }
         return syncAccountsFromDisk(diskConfig, config, accountManager);
       },
@@ -1617,8 +1627,8 @@ async function proxyWorkerCommand() {
     liveSyncChain = liveSyncChain.then(async () => {
       const diskConfig = await accountManager.readAfterAccountFlagWrites(() => loadConfig());
       if (!diskConfig) return;
-      if (agyConfigMismatch(diskConfig.provider, agyMode)) {
-        throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider}" config; not reloading it`);
+      if (agyConfigMismatch(diskConfig.provider, agyMode, true)) {
+        throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider ?? 'unset'}" provider config; not reloading it`);
       }
       await syncAccountsFromDisk(diskConfig, config, accountManager);
       if (codexMode || agyMode) await server.refreshQuotaAll();
@@ -3730,9 +3740,11 @@ async function revokeReplacedCodexToken(previous, next, label) {
 
 // ── Antigravity (agy) ───────────────────────────────────────
 
+// agy writers run only in agy mode, where a missing file is created with
+// `provider: "agy"`; anything else (a Claude config has no provider) is not ours.
 function assertAgyConfig(cfg) {
-  if (cfg.provider && cfg.provider !== 'agy') {
-    throw new Error(`${getConfigPath()} is a "${cfg.provider}" config, not an Antigravity (agy) one — not writing to it.`);
+  if (cfg.provider !== 'agy') {
+    throw new Error(`${getConfigPath()} is not an Antigravity (agy) config (provider: ${cfg.provider ? `"${cfg.provider}"` : 'unset'}) — not writing to it.`);
   }
 }
 
@@ -4154,10 +4166,15 @@ function isCodexMode(config) {
     || process.env.TEAMCLAUDE_PROVIDER === 'codex';
 }
 
-/** True when a config's provider and the agy-ness of the mode disagree (combinations involving agy only). */
-function agyConfigMismatch(configuredProvider, agyMode) {
-  return Boolean(configuredProvider)
-    && (agyMode ? configuredProvider !== 'agy' : configuredProvider === 'agy');
+/**
+ * Config/mode disagreement (combinations involving agy only): agy mode accepts
+ * an existing file only when it says `provider: "agy"`; any other mode refuses
+ * an agy config.
+ */
+function agyConfigMismatch(configuredProvider, agyMode, configExists) {
+  return agyMode
+    ? configExists && configuredProvider !== 'agy'
+    : configuredProvider === 'agy';
 }
 
 function isAgyMode(config) {

@@ -382,8 +382,10 @@ exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" 
 
 `TEAMCLAUDE_CONFIG`를 Claude·Codex 설정으로 고정한 래퍼로 `teamclaude agy …`
 (또는 `teamcodex agy …`)를 실행하지 마세요. agy 풀과 Claude·Codex 풀은 설정
-파일을 함께 쓰지 않으므로, 프록시가 그 조합(반대 경우도)을 아무것도 쓰기 전에
-거부합니다.
+파일을 함께 쓰지 않습니다. agy 모드에서는 이미 있는 설정 파일이
+`"provider": "agy"`일 때만 씁니다(Claude 설정은 보통 `provider` 키가 아예 없는데,
+이것도 똑같이 거부합니다). 파일이 없을 때만 agy 설정으로 새로 만들고, Claude·Codex
+명령은 agy 설정을 거부합니다. 거부는 쓰기·재로드·정지·기동보다 먼저 일어납니다.
 
 **먼저 `agy`에 한 번 로그인해 두세요.** 클라이언트는 agy 그대로이고 자기
 로그인·설정·MCP를 유지합니다. 프록시가 매 호출마다 agy의 자격 증명을 풀 계정의

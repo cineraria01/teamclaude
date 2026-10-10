@@ -419,9 +419,12 @@ exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" 
 ```
 
 Do not run `teamclaude agy …` (or `teamcodex agy …`) through a wrapper that
-pins `TEAMCLAUDE_CONFIG` to the Claude or Codex config: an agy pool and a
-Claude/Codex pool never share a config file, so the proxy refuses that
-combination (and the reverse) before writing anything.
+pins `TEAMCLAUDE_CONFIG` to the Claude or Codex config. An agy pool and a
+Claude/Codex pool never share a config file: in agy mode an existing config
+must say `"provider": "agy"` (a Claude config usually has no `provider` key at
+all, and is refused just the same), only a missing file is created — as an agy
+config — and a Claude/Codex command refuses an agy config. The refusal happens
+before anything is written, reloaded, stopped or started.
 
 **Sign in to `agy` once first.** agy stays the client and keeps its own login,
 settings and MCP servers; the proxy replaces agy's credentials with the pool
