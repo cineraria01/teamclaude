@@ -338,10 +338,11 @@ async function superviseServerCommand() {
   const proxyApiKey = config?.proxy?.apiKey;
   const existing = await findRunningServer(config);
   if (existing && existing.port === port) {
-    console.error(`[TeamClaude] A server is already running on port ${port}${existing.pid ? ` (pid ${existing.pid})` : ''}.`);
-    console.error('  See it:      teamcodex status');
-    console.error('  Stop it:     teamcodex stop');
-    console.error('  Restart it:  teamcodex restart');
+    const cli = cliName(config);
+    console.error(`[${cli}] A server is already running on port ${port}${existing.pid ? ` (pid ${existing.pid})` : ''}.`);
+    console.error(`  See it:      ${cli} status`);
+    console.error(`  Stop it:     ${cli} stop`);
+    console.error(`  Restart it:  ${cli} restart`);
     process.exitCode = 1;
     return;
   }
@@ -3100,7 +3101,7 @@ async function reloadCommand() {
     process.exit(1);
   }
   if (res.status === 404) {
-    console.error('The running server does not support reload yet. Apply it with: teamcodex restart');
+    console.error(`The running server does not support reload yet. Apply it with: ${cliName(config)} restart`);
     process.exit(1);
   }
   if (!res.ok || data?.targets == null) {
@@ -3401,7 +3402,7 @@ async function removeCommand() {
   const name = args[1];
 
   if (!name) {
-    console.error('Usage: teamcodex remove <account-name>');
+    console.error(`Usage: ${cliName()} remove <account-name>`);
     process.exit(1);
   }
 
@@ -3434,7 +3435,7 @@ async function noteRunningServerReload(config) {
       : null;
     if (!workerPid) {
       console.error('The running server does not support account-only live reload.');
-      console.error('Apply the change with: teamcodex restart');
+      console.error(`Apply the change with: ${cliName(config)} restart`);
       return false;
     }
     process.kill(workerPid, 'SIGHUP');
@@ -3442,7 +3443,7 @@ async function noteRunningServerReload(config) {
     return true;
   } catch (err) {
     console.error(`Could not reload the running server automatically: ${err.message}`);
-    console.error('Apply the change with: teamcodex restart');
+    console.error(`Apply the change with: ${cliName(config)} restart`);
     return false;
   }
 }
@@ -3450,7 +3451,7 @@ async function noteRunningServerReload(config) {
 async function setEnabledCommand(enabled) {
   const name = args[1];
   if (!name) {
-    console.error(`Usage: teamcodex ${enabled ? 'enable' : 'disable'} <account-name>`);
+    console.error(`Usage: ${cliName()} ${enabled ? 'enable' : 'disable'} <account-name>`);
     process.exit(1);
   }
   // atomicConfigUpdate re-reads disk before writing, so a concurrent token
@@ -3471,7 +3472,7 @@ async function setPriorityCommand() {
   const name = args[1];
   const raw = args[2];
   if (!name || raw === undefined) {
-    console.error('Usage: teamcodex priority <account-name> <number|auto>');
+    console.error(`Usage: ${cliName()} priority <account-name> <number|auto>`);
     console.error('  Lower number = preferred first. Use "auto" (or "clear") to return the');
     console.error('  account to automatic ordering: weekly reset soonest is drained first.');
     process.exit(1);
@@ -3499,7 +3500,7 @@ async function anthropicSubscriptionCommand() {
   const name = args[1];
   const state = args[2];
   if (!name || (state !== 'disabled' && state !== 'ok')) {
-    console.error('Usage: teamcodex subscription <account-name> <disabled|ok>');
+    console.error(`Usage: ${cliName()} subscription <account-name> <disabled|ok>`);
     console.error('  "disabled" records a confirmed organization access denial and keeps the');
     console.error('  account out of rotation while TeamClaude rechecks it. "ok" clears it now.');
     process.exit(1);
@@ -4214,6 +4215,12 @@ function isAgyMode(config) {
     || process.env.TEAMCLAUDE_PROVIDER === 'agy';
 }
 
+/** The wrapper command of this pool, for "run this next" hints. */
+function cliName(config) {
+  if (isAgyMode(config)) return 'teamagy';
+  return isCodexMode(config) ? 'teamcodex' : 'teamclaude';
+}
+
 async function resolveAccounts(config) {
   const accounts = [];
   for (const acct of config.accounts) {
@@ -4260,11 +4267,12 @@ function argValue(flag) {
 
 function handleServerListenError(err, port) {
   if (err.code === 'EADDRINUSE') {
-    console.error(`[TeamClaude] Port ${port} is already in use.`);
-    console.error('Another TeamClaude proxy may already be running.');
-    console.error('  See it:     teamcodex status');
-    console.error('  Stop it:    teamcodex stop');
-    console.error('  Restart it: teamcodex restart');
+    const cli = cliName();
+    console.error(`[${cli}] Port ${port} is already in use.`);
+    console.error(`Another ${cli} proxy may already be running.`);
+    console.error(`  See it:     ${cli} status`);
+    console.error(`  Stop it:    ${cli} stop`);
+    console.error(`  Restart it: ${cli} restart`);
   } else if (err.code === 'EACCES') {
     console.error(`[TeamClaude] Permission denied while listening on port ${port}.`);
     console.error('Choose a non-privileged port in the TeamClaude config.');
