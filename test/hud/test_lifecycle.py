@@ -161,6 +161,10 @@ def check():
                     session = sessions().split()[0]
                     panes = subprocess.check_output(base + ["list-panes", "-t", session, "-F", "#{pane_pid}"], text=True)
                     pids += [int(pid) for pid in panes.splitlines()]
+                    # Neither pane sets a title, so the terminal tab gets the window name, not the host name.
+                    titles = subprocess.check_output(base + ["list-panes", "-t", session, "-F", "#{T:set-titles-string}"],
+                                                     text=True).split()
+                    assert set(titles) == {{"agy": "agy", "claude": "Claude"}.get(mode, "Codex")}, titles
                     if mode == "two-clients":
                         second = connect(base + ["attach-session", "-t", session])
                         eventually(lambda: sessions().endswith(" 2"))
