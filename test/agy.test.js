@@ -1,0 +1,359 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  agyAffinityKey,
+  agyModelGroup,
+  agyUsageFromResponse,
+  buildAgyAuthUrl,
+  buildAgyRunEnv,
+  classifyAgy429,
+  extractAgyOAuthClient,
+  parseAgyCredentials,
+  parseAgyQuotaSummary,
+  parseAgyStoredLogin,
+  readAgyKeychain,
+  resolveAgyBin,
+  resolveAgyOAuthClient,
+  rewriteAgyProject,
+} from '../src/agy.js';
+
+// Obviously fake OAuth client values, assembled at runtime so no literal in
+// this public repository resembles a real Google client id or secret.
+const FAKE_CLIENT_ID = `${['1071006060591', 'fakeclient'].join('-')}.apps.googleusercontent.com`;
+// agy 1.3.3's layout, faked: the right secret is the head of a longer run
+// (Go strings have no separator), a free-standing one belongs to another client.
+const RIGHT_SECRET = ['GOCSPX', 'R'.repeat(28)].join('-');
+const DECOY_SECRET = ['GOCSPX', 'D'.repeat(28)].join('-');
+const GLUED_TAIL = 'NextGoStringGluedOn_'.padEnd(35, 'z');
+const FAKE_BINARY = Buffer.concat([
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2]),
+  Buffer.from(`${['GOCSPX', 'tooShort'].join('-')}\0runtime.go\0${FAKE_CLIENT_ID}`),
+  Buffer.from(`${RIGHT_SECRET}${GLUED_TAIL}\0other\0${DECOY_SECRET}\0`),
+  Buffer.from([0xff, 0xfe]),
+]);
+
+/** Fake Google token endpoint: `accepts(id, secret)` decides valid vs invalid_client. */
+async function tokenEndpoint(accepts, { status } = {}) {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+    requests.push(form);
+    if (status) {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end('{"error":"backend_error"}');
+      return;
+    }
+    const ok = accepts(form.client_id, form.client_secret);
+    res.writeHead(ok ? 400 : 401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: ok ? 'invalid_grant' : 'invalid_client' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return {
+    requests,
+    url: `http://127.0.0.1:${server.address().port}/token`,
+    close: () => new Promise(resolve => server.close(resolve)),
+  };
+}
+
+function jwt(payload) {
+  return `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
+}
+
+function storedLogin(overrides = {}) {
+  return {
+    token: {
+      access_token: 'ya29.fake-access',
+      token_type: 'Bearer',
+      refresh_token: '1//fake-refresh',
+      expiry: '2030-01-01T00:00:00Z',
+    },
+    auth_method: 'consumer',
+    id_token: jwt({ sub: 'google-sub-1', email: 'pro@example.com', aud: FAKE_CLIENT_ID }),
+    ...overrides,
+  };
+}
+
+test('agy login parses from the go-keyring keychain value and from plain JSON identically', () => {
+  const json = JSON.stringify(storedLogin());
+  const keychain = `go-keyring-base64:${Buffer.from(json).toString('base64')}`;
+
+  const fromKeychain = parseAgyCredentials(parseAgyStoredLogin(keychain));
+  const fromFile = parseAgyCredentials(parseAgyStoredLogin(`${json}\n`));
+
+  assert.deepEqual(fromKeychain, fromFile);
+  assert.deepEqual(fromFile, {
+    accessToken: 'ya29.fake-access',
+    refreshToken: '1//fake-refresh',
+    idToken: storedLogin().id_token,
+    expiresAt: Date.parse('2030-01-01T00:00:00Z'),
+    accountUuid: 'google-sub-1',
+    email: 'pro@example.com',
+    clientId: FAKE_CLIENT_ID,
+  });
+});
+
+test('agy credentials require tokens and an id_token subject', () => {
+  assert.throws(() => parseAgyCredentials({}), /token/);
+  assert.throws(() => parseAgyCredentials(storedLogin({ token: { access_token: 'a' } })), /refresh_token/);
+  assert.throws(() => parseAgyCredentials(storedLogin({ id_token: jwt({ email: 'x@example.com' }) })), /sub/);
+});
+
+test('readAgyKeychain asks security for service gemini / account antigravity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-security-'));
+  const fake = join(dir, 'security');
+  await writeFile(fake, `#!/bin/sh
+[ "$*" = "find-generic-password -s gemini -a antigravity -w" ] || exit 44
+echo "go-keyring-base64:Zm9v"
+`);
+  await chmod(fake, 0o755);
+  try {
+    assert.equal(readAgyKeychain({ securityBin: fake }), 'go-keyring-base64:Zm9v');
+    assert.throws(() => readAgyKeychain({ securityBin: join(dir, 'missing') }), /not found/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('every 28-char secret candidate is collected, including the head of a glued run', () => {
+  assert.deepEqual(extractAgyOAuthClient(FAKE_BINARY), {
+    clientIds: [FAKE_CLIENT_ID],
+    clientSecrets: [RIGHT_SECRET, DECOY_SECRET],
+  });
+  assert.deepEqual(extractAgyOAuthClient(Buffer.concat([FAKE_BINARY, Buffer.from(DECOY_SECRET)])).clientSecrets,
+    [RIGHT_SECRET, DECOY_SECRET], 'duplicates collapse');
+  assert.deepEqual(extractAgyOAuthClient(Buffer.from('nothing here')), { clientIds: [], clientSecrets: [] });
+});
+
+test('the token endpoint picks the client pair: invalid_grant = right, invalid_client = wrong', async () => {
+  const endpoint = await tokenEndpoint((id, secret) => id === FAKE_CLIENT_ID && secret === RIGHT_SECRET);
+  try {
+    const picked = await resolveAgyOAuthClient({
+      config: {},
+      binaryPath: '/fake/agy',
+      readBinary: () => FAKE_BINARY,
+      tokenUrl: endpoint.url,
+    });
+    assert.deepEqual(picked, { clientId: FAKE_CLIENT_ID, clientSecret: RIGHT_SECRET, source: 'probe' });
+    assert.deepEqual(endpoint.requests.map(form => [form.grant_type, form.refresh_token, form.client_secret]), [
+      ['refresh_token', 'teamagy-oauth-client-probe', RIGHT_SECRET],
+      ['refresh_token', 'teamagy-oauth-client-probe', DECOY_SECRET],
+    ]);
+
+    // The id_token aud is the id; a single candidate is still verified.
+    endpoint.requests.length = 0;
+    const single = await resolveAgyOAuthClient({
+      config: {},
+      clientIdHint: FAKE_CLIENT_ID,
+      binaryPath: '/fake/agy',
+      readBinary: () => Buffer.from(`${RIGHT_SECRET}\0`),
+      tokenUrl: endpoint.url,
+    });
+    assert.equal(single.clientSecret, RIGHT_SECRET);
+    assert.equal(endpoint.requests.length, 1);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('no accepted pair, several, or no clear answer is an error — never a guess', async () => {
+  const resolveWith = endpoint => resolveAgyOAuthClient({
+    config: {},
+    binaryPath: '/fake/agy',
+    readBinary: () => FAKE_BINARY,
+    tokenUrl: endpoint.url,
+  });
+  for (const [endpoint, message] of [
+    [await tokenEndpoint(() => false), /None of 2 candidate OAuth client pairs.*agyOAuthClientSecret/],
+    [await tokenEndpoint(() => true), /2 of 2 candidate OAuth client pairs.*not guessing/],
+    [await tokenEndpoint(() => true, { status: 503 }), /no clear answer.*agyOAuthClientSecret/],
+  ]) {
+    try {
+      await assert.rejects(resolveWith(endpoint), message);
+    } finally {
+      await endpoint.close();
+    }
+  }
+});
+
+test('a configured client wins without probing; a refused configured secret is re-probed without it', async () => {
+  const endpoint = await tokenEndpoint((id, secret) => secret === RIGHT_SECRET);
+  let reads = 0;
+  const readBinary = () => { reads += 1; return FAKE_BINARY; };
+  try {
+    const configured = await resolveAgyOAuthClient({
+      config: { agyOAuthClientId: FAKE_CLIENT_ID, agyOAuthClientSecret: DECOY_SECRET },
+      binaryPath: '/fake/agy',
+      readBinary,
+      tokenUrl: endpoint.url,
+    });
+    assert.deepEqual(configured, { clientId: FAKE_CLIENT_ID, clientSecret: DECOY_SECRET, source: 'config' });
+    assert.equal(reads, 0);
+    assert.equal(endpoint.requests.length, 0);
+
+    const recovered = await resolveAgyOAuthClient({
+      config: { agyOAuthClientId: FAKE_CLIENT_ID, agyOAuthClientSecret: DECOY_SECRET },
+      binaryPath: '/fake/agy',
+      readBinary,
+      tokenUrl: endpoint.url,
+      rejectedSecret: DECOY_SECRET,
+    });
+    assert.deepEqual(recovered, { clientId: FAKE_CLIENT_ID, clientSecret: RIGHT_SECRET, source: 'probe' });
+    assert.deepEqual(endpoint.requests.map(form => form.client_secret), [RIGHT_SECRET], 'the refused secret is not probed again');
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('token usage is counted once, from the final frame', () => {
+  const usageMetadata = { promptTokenCount: 30, candidatesTokenCount: 8, totalTokenCount: 45 };
+  assert.equal(agyUsageFromResponse({ candidates: [{ content: {} }], usageMetadata }), null);
+  assert.deepEqual(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }], usageMetadata }), { input: 30, output: 15 });
+  assert.deepEqual(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }], usageMetadata: { totalTokenCount: 7 } }),
+    { input: 0, output: 7 });
+  assert.equal(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }] }), null);
+  assert.equal(agyUsageFromResponse(undefined), null);
+});
+
+test('model groups: gemini-* and unknown → gemini, claude-*/gpt-* → 3p, no model → none', () => {
+  assert.equal(agyModelGroup('gemini-3.6-flash-low'), 'gemini');
+  assert.equal(agyModelGroup('gemini-3.1-pro-high'), 'gemini');
+  assert.equal(agyModelGroup('claude-opus-5-5-high'), '3p');
+  assert.equal(agyModelGroup('claude-sonnet-5-5-low'), '3p');
+  assert.equal(agyModelGroup('gpt-oss-120b-medium'), '3p');
+  assert.equal(agyModelGroup('something-new'), 'gemini');
+  assert.equal(agyModelGroup(null), null);
+  assert.equal(agyModelGroup(''), null);
+});
+
+test('quota summary parses into 5h/weekly per group', () => {
+  const groups = parseAgyQuotaSummary({
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', resetTime: '2026-10-17T03:33:37Z', remainingFraction: 0.75 },
+          { bucketId: 'gemini-5h', window: '5h', resetTime: '2026-10-10T08:33:37Z', remainingFraction: 1 },
+        ],
+      },
+      {
+        displayName: 'Claude and GPT models',
+        buckets: [
+          { bucketId: '3p-weekly', window: 'weekly', resetTime: '2026-10-17T03:33:37Z', remainingFraction: 0.1 },
+          // proto3 drops a zero remainingFraction: unknown here, exhausted after a 429
+          { bucketId: '3p-5h', window: '5h', resetTime: '2026-10-10T08:33:37Z' },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(groups, {
+    gemini: {
+      fiveHour: { utilization: 0, reset: Date.parse('2026-10-10T08:33:37Z') },
+      weekly: { utilization: 0.25, reset: Date.parse('2026-10-17T03:33:37Z') },
+    },
+    '3p': {
+      fiveHour: { utilization: null, reset: Date.parse('2026-10-10T08:33:37Z') },
+      weekly: { utilization: 0.9, reset: Date.parse('2026-10-17T03:33:37Z') },
+    },
+  });
+  assert.deepEqual(parseAgyQuotaSummary(null).gemini.fiveHour, { utilization: null, reset: null });
+});
+
+test('429 classification: capacity reason vs exhaustion, RetryInfo delay', () => {
+  const body = (reason, delay) => JSON.stringify({
+    error: {
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      details: [
+        { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason },
+        ...(delay ? [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: delay }] : []),
+      ],
+    },
+  });
+  assert.deepEqual(classifyAgy429(Buffer.from(body('MODEL_CAPACITY_EXHAUSTED'))),
+    { capacity: true, reason: 'MODEL_CAPACITY_EXHAUSTED', retryDelayMs: null });
+  assert.deepEqual(classifyAgy429(body('RATE_LIMIT_EXCEEDED', '12.5s')),
+    { capacity: false, reason: 'RATE_LIMIT_EXCEEDED', retryDelayMs: 12500 });
+  assert.deepEqual(classifyAgy429(`[${body('QUOTA_EXHAUSTED', '30s')}]`),
+    { capacity: false, reason: 'QUOTA_EXHAUSTED', retryDelayMs: 30000 });
+  assert.deepEqual(classifyAgy429('not json'), { capacity: false, reason: null, retryDelayMs: null });
+});
+
+test('project rewrite: equal and absent are byte-identical no-ops, a different project is rewritten', () => {
+  const same = Buffer.from('{"project":"aicode-consumers","model":"gemini-3.6-flash-low"}');
+  assert.equal(rewriteAgyProject(same, 'aicode-consumers'), same);
+  const absent = Buffer.from('{"trajectoryId":"t-1"}');
+  assert.equal(rewriteAgyProject(absent, 'proj-b'), absent);
+  assert.equal(rewriteAgyProject(same, null), same);
+  const nested = Buffer.from('{"request":{"project":"x"}}');
+  assert.equal(rewriteAgyProject(nested, 'proj-b'), nested);
+
+  const rewritten = rewriteAgyProject(same, 'proj-b');
+  assert.deepEqual(JSON.parse(rewritten.toString()), { project: 'proj-b', model: 'gemini-3.6-flash-low' });
+});
+
+test('affinity key links a trajectory ACL write to its inference, else the session id', () => {
+  assert.equal(agyAffinityKey('/v1internal:writeTrajectoryAcls', Buffer.from('{"trajectoryId":"traj-1"}')), 'trajectory:traj-1');
+  assert.equal(agyAffinityKey(
+    '/v1internal:streamGenerateContent?alt=sse',
+    Buffer.from(JSON.stringify({ requestId: 'agent/conv-1/1760000000000/traj-1/3', request: { sessionId: 's-1' } })),
+  ), 'trajectory:traj-1');
+  assert.equal(agyAffinityKey(
+    '/v1internal:streamGenerateContent?alt=sse',
+    Buffer.from(JSON.stringify({ requestId: 'checkpoint/abc', request: { sessionId: 's-1' } })),
+  ), 'session:s-1');
+  assert.equal(agyAffinityKey('/v1internal:loadCodeAssist', Buffer.from('{"trajectoryId":"x"}')), null);
+});
+
+test('agy binary resolution: env override → next to node → ~/.local/bin → bare', () => {
+  const none = () => false;
+  assert.equal(resolveAgyBin({ env: { TEAMAGY_AGY_BIN: '/custom/agy' }, exists: none }), '/custom/agy');
+  assert.equal(
+    resolveAgyBin({ env: {}, execPath: '/opt/node/bin/node', exists: path => path === '/opt/node/bin/agy' }),
+    '/opt/node/bin/agy',
+  );
+  assert.equal(
+    resolveAgyBin({ env: { HOME: '/home/u' }, execPath: '/opt/node/bin/node', exists: path => path === '/home/u/.local/bin/agy' }),
+    '/home/u/.local/bin/agy',
+  );
+  assert.equal(resolveAgyBin({ env: { HOME: '/home/u' }, execPath: '/opt/node/bin/node', exists: none }), 'agy');
+});
+
+test('agy run env points Cloud Code at the proxy and drops the pool selectors', () => {
+  const env = buildAgyRunEnv({
+    PATH: '/bin',
+    HOME: '/home/u',
+    TEAMCLAUDE_PROVIDER: 'agy',
+    TEAMCLAUDE_CONFIG: '/home/u/.config/teamagy.json',
+  }, 3458);
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/home/u', CLOUD_CODE_URL: 'http://127.0.0.1:3458' });
+});
+
+test('login URL: PKCE S256, offline access, forced consent, agy scopes, loopback redirect', () => {
+  const url = new URL(buildAgyAuthUrl({
+    clientId: FAKE_CLIENT_ID,
+    redirectUri: 'http://127.0.0.1:5555/callback',
+    state: 'state-1',
+    codeChallenge: 'challenge-1',
+  }));
+  assert.equal(url.origin + url.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+  assert.equal(url.searchParams.get('client_id'), FAKE_CLIENT_ID);
+  assert.equal(url.searchParams.get('redirect_uri'), 'http://127.0.0.1:5555/callback');
+  assert.equal(url.searchParams.get('access_type'), 'offline');
+  assert.equal(url.searchParams.get('prompt'), 'consent');
+  assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(url.searchParams.get('code_challenge'), 'challenge-1');
+  assert.equal(url.searchParams.get('state'), 'state-1');
+  const scopes = url.searchParams.get('scope').split(' ');
+  for (const scope of ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/aicode',
+    'https://www.googleapis.com/auth/cclog', 'https://www.googleapis.com/auth/cloud-platform',
+    'https://www.googleapis.com/auth/experimentsandconfigs']) {
+    assert.ok(scopes.includes(scope), scope);
+  }
+});

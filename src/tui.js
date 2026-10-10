@@ -470,7 +470,7 @@ export class TUI {
 
   _keyAdd(k) {
     if (k === 'i') { this._doImport(); this.mode = 'normal'; }
-    else if (k === 'k' && this.config.provider !== 'codex') {
+    else if (k === 'k' && this.config.provider !== 'codex' && this.config.provider !== 'agy') {
       this.mode = 'input';
       this.inputPrompt = 'API key';
       this.inputBuf = '';
@@ -540,6 +540,10 @@ export class TUI {
   async _doImport() {
     if (this.config.provider === 'codex') {
       await this._doImportCodex();
+      return;
+    }
+    if (this.config.provider === 'agy') {
+      this._addLog('Add Antigravity accounts from a terminal: teamagy import / teamagy login (or node src/index.js agy import), then R');
       return;
     }
     try {
@@ -881,8 +885,10 @@ export class TUI {
     const lines = [];
 
     // ── Header
-    const left = bold(this.config.provider === 'codex' ? ' TeamCodex' : ' TeamClaude');
-    const port = this.config.proxy?.port || (this.config.provider === 'codex' ? 3457 : 3456);
+    const left = bold(this.config.provider === 'codex' ? ' TeamCodex'
+      : this.config.provider === 'agy' ? ' TeamAgy' : ' TeamClaude');
+    const port = this.config.proxy?.port
+      || (this.config.provider === 'codex' ? 3457 : this.config.provider === 'agy' ? 3458 : 3456);
     // Host CPU/RAM at a glance (render loop ticks often enough for live CPU%).
     // Thresholds mirror the quota bars: calm → green-ish default, 70%+ warns,
     // 90%+ screams — this box dying from overload is a real failure mode.
@@ -1044,7 +1050,17 @@ export class TUI {
         ('7d_oi' in q.modelWeekly && ['7d_oi', q.modelWeekly['7d_oi']])
         || Object.entries(q.modelWeekly)[0]);
       l3 = 'Fbl';
-      if (mw) {
+      if (a.provider === 'agy') {
+        // agy: Ses/Wk are the Gemini group; the third bar is the Claude/GPT
+        // group's binding window (the fuller of its 5h and weekly buckets).
+        const g3 = q.agyGroups?.['3p'];
+        const win = [g3?.fiveHour, g3?.weekly]
+          .filter(w => w?.utilization != null)
+          .sort((x, y) => y.utilization - x.utilization)[0];
+        l3 = '3p ';
+        r3 = win?.utilization ?? null;
+        t3 = win?.reset ?? null;
+      } else if (mw) {
         const [label, win] = mw;
         if (label !== '7d_oi') l3 = (label.slice(3) + '   ').slice(0, 3);
         r3 = win.utilization;
@@ -1096,7 +1112,9 @@ export class TUI {
       case 'add':
         return this.config.provider === 'codex'
           ? ` ${bold('i')}mport Codex login  ${bold('Esc')} cancel`
-          : ` ${bold('i')}mport Claude Code  ${bold('k')} API key  ${bold('Esc')} cancel`;
+          : this.config.provider === 'agy'
+            ? ` ${bold('i')} how to add (teamagy import / login)  ${bold('Esc')} cancel`
+            : ` ${bold('i')}mport Claude Code  ${bold('k')} API key  ${bold('Esc')} cancel`;
       case 'input':
         return ` ${this.inputPrompt}: ${this.inputBuf}█`;
       default:

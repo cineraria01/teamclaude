@@ -361,6 +361,86 @@ rotation에서 제외하고, 이후 유효한 사용량 폴이 성공하면 자�
 보류하므로, 사용량 endpoint만의 장애로 pool 전체가 멈추지 않습니다. 실제 요청
 경로의 인증 실패는 마지막 계정도 격리할 수 있습니다.
 
+## Antigravity (agy) 다계정 설정
+
+Antigravity 풀(TeamAgy)은 `~/.config/teamagy.json`과 기본 포트 `3458`을 따로
+씁니다. 그래서 Claude·Codex 프록시와 동시에 실행할 수 있습니다. Antigravity
+CLI(`agy`)가 쓰는 Google AI Pro/Ultra 계정을 모아, Codex 풀이 ChatGPT 계정을
+돌리는 것처럼 쿼터에 따라 계정을 바꿉니다.
+
+모든 명령에 `agy` 접두를 붙입니다(`node src/index.js agy <명령>`). 모드와 agy
+설정 경로를 함께 고정하는 `teamagy` 래퍼를 두고 아래 명령을 모두 그것으로
+실행하세요.
+
+```sh
+#!/bin/sh
+# ~/.local/bin/teamagy
+[ "$1" = agy ] && shift
+exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" \
+  node /path/to/teamclaude/src/index.js agy "$@"
+```
+
+`TEAMCLAUDE_CONFIG`를 Claude·Codex 설정으로 고정한 래퍼로 `teamclaude agy …`
+(또는 `teamcodex agy …`)를 실행하지 마세요. agy 풀과 Claude·Codex 풀은 설정
+파일을 함께 쓰지 않습니다. agy 모드에서는 이미 있는 설정 파일이
+`"provider": "agy"`일 때만 씁니다(Claude 설정은 보통 `provider` 키가 아예 없는데,
+이것도 똑같이 거부합니다). 파일이 없을 때만 agy 설정으로 새로 만들고, Claude·Codex
+명령은 agy 설정을 거부합니다. 거부는 쓰기·재로드·정지·기동보다 먼저 일어납니다.
+
+**먼저 `agy`에 한 번 로그인해 두세요.** 클라이언트는 agy 그대로이고 자기
+로그인·설정·MCP를 유지합니다. 프록시가 매 호출마다 agy의 자격 증명을 풀 계정의
+것으로 바꿉니다. 로컬 로그인이 없으면 agy가 로그인을 요구합니다.
+
+```bash
+# 1. agy에 로그인된 계정 가져오기 (macOS 키체인)
+teamagy import --name pro-1
+#    다른 OS에서는 같은 로그인 JSON을 파일로 가져오기
+teamagy import --file ./agy-login.json --name pro-1
+
+# 2. 계정 더 넣기: 브라우저 Google 로그인 (agy 자체 로그인은 건드리지 않음)
+teamagy login --name pro-2
+
+# 3. 풀을 거쳐 agy 실행 (프록시가 꺼져 있으면 자동으로 띄움)
+teamagy run
+teamagy run -- -p "summarize this repository"
+
+# 직접 띄우는 agy를 프록시로 보내기
+eval "$(teamagy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
+```
+
+가져오기와 로그인은 `loadCodeAssist`를 한 번 불러 계정 등급(`g1-pro-tier` 등)과
+프로젝트를 저장하고, 유료 등급이 없으면 경고합니다. 같은 Google 계정을 다시
+가져오면 그 계정을 그대로 갱신합니다. 계정을 지워도 Google 권한은 철회하지
+않습니다(로컬 agy 로그인과 같은 계정일 수 있음). 토큰 갱신에 쓰는 OAuth
+클라이언트는 설치된 `agy` 바이너리에서 읽어 설정에 저장합니다. 바이너리에는 후보
+비밀값이 여럿 있어서, 가짜 refresh 토큰으로 Google 토큰 엔드포인트에 하나씩
+확인합니다. 맞는 클라이언트는 `invalid_grant`, 틀린 것은 `invalid_client`로
+답합니다(토큰은 발급되지 않음). 나중에 저장된 클라이언트가 거부되면 같은 방법으로
+다시 확인하고, 계정 탓으로 돌리지 않습니다. 후보 중 정확히 하나가 통과하지 않으면
+설정에 `agyOAuthClientId`·`agyOAuthClientSecret`을 직접 넣으세요.
+
+쿼터는 계정별 쿼터 요약을 시작할 때, 10분마다, 사용 후에 읽어 옵니다(꺼 둔 계정과 격리된 계정은 읽지 않음). Gemini
+모델과 Claude/GPT 모델은 5시간·주간 한도가 따로라서, Gemini 쿼터를 다 쓴 계정도
+Claude·GPT 모델은 계속 처리합니다. `status`는 평소의 Session/Weekly 줄에 Gemini
+그룹을, 그 아래 줄에 Claude/GPT 그룹을 보여 줍니다(대시보드의 세 번째 막대).
+agy는 계정마다 대화 상태를 들고 있으므로, 한 세션은 그 계정이 해당 모델을 처리할
+수 없을 때만 다른 계정으로 옮깁니다. 처리할 계정이 하나도 없으면 agy가 Google의
+429를 그대로 받아 평소 메시지를 보여 줍니다.
+
+```bash
+teamagy status
+teamagy accounts
+teamagy reload            # 모든 계정의 쿼터 요약을 지금 다시 읽기
+teamagy disable pro-1
+teamagy priority pro-2 0
+teamagy restart
+```
+
+범위 밖: 로그인 없는 agy 실행, Gemini CLI, API key·Vertex 방식, macOS 밖의 키체인
+가져오기(`--file` 사용), 재인증, 구독 추적, reset credit, cmux 재개. 다른 풀처럼
+루프백 클라이언트만 받습니다. 원격 클라이언트에 필요한 프록시 API key를 agy는
+보낼 수 없습니다.
+
 ## Hermes Agent 연결
 
 TeamCodex를 실행한 뒤 Hermes의 Codex provider가 로컬 프록시를 사용하도록

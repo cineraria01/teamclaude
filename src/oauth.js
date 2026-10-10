@@ -175,10 +175,16 @@ const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference user:sessio
  * Perform OAuth login via browser with PKCE flow.
  * Opens the user's browser, waits for the callback, exchanges the code for tokens.
  */
-export async function loginOAuth() {
-  // Generate PKCE
+/** PKCE S256 verifier/challenge pair (shared by the Claude and Antigravity logins). */
+export function createPkce() {
   const codeVerifier = randomBytes(32).toString('base64url');
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  return { codeVerifier, codeChallenge };
+}
+
+export async function loginOAuth() {
+  // Generate PKCE
+  const { codeVerifier, codeChallenge } = createPkce();
   const state = randomBytes(32).toString('base64url');
 
   // Start local callback server on a random port
@@ -241,7 +247,7 @@ export async function loginOAuth() {
  * Race the callback server promise against manual code entry from stdin.
  * The user can paste the full callback URL or just the authorization code.
  */
-function raceWithStdinCode(callbackPromise, expectedState) {
+export function raceWithStdinCode(callbackPromise, expectedState) {
   if (!process.stdin.isTTY) return callbackPromise;
 
   return new Promise((resolve, reject) => {
@@ -285,7 +291,13 @@ function raceWithStdinCode(callbackPromise, expectedState) {
   });
 }
 
-function startCallbackServer(expectedState) {
+// `host` binds the listener (default: all interfaces, the Claude login's
+// historical behavior); `successLocation: null` answers with a plain page
+// instead of redirecting to Claude's success URL (Antigravity login).
+export function startCallbackServer(expectedState, {
+  host,
+  successLocation = 'https://platform.claude.com/oauth/code/success?app=claude-code',
+} = {}) {
   return new Promise((resolve, reject) => {
     let resolveCode, rejectCode;
     const codePromise = new Promise((res, rej) => { resolveCode = res; rejectCode = rej; });
@@ -313,8 +325,13 @@ function startCallbackServer(expectedState) {
         }
 
         if (code) {
-          res.writeHead(302, { 'Location': 'https://platform.claude.com/oauth/code/success?app=claude-code' });
-          res.end();
+          if (successLocation) {
+            res.writeHead(302, { 'Location': successLocation });
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end('<html><body><h2>Signed in</h2><p>You can close this tab.</p></body></html>');
+          }
           resolveCode(code);
           return;
         }
@@ -324,7 +341,7 @@ function startCallbackServer(expectedState) {
       res.end('Not found');
     });
 
-    server.listen(0, () => {
+    server.listen(0, host, () => {
       resolve({ port: server.address().port, codePromise, server });
     });
     server.on('error', reject);
@@ -339,7 +356,7 @@ function startCallbackServer(expectedState) {
   });
 }
 
-function openBrowser(url) {
+export function openBrowser(url) {
   const platform = process.platform;
   const cmd = platform === 'darwin' ? 'open'
     : platform === 'win32' ? 'start'

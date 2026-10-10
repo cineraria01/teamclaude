@@ -25,7 +25,7 @@ const UNSAFE_CODEX_RESUME_OPTIONS = new Set([
 ]);
 const CODEX_RESUME_SELECTORS = new Set(['--all', '--last']);
 
-function decodeJwtPayload(token) {
+export function decodeJwtPayload(token) {
   if (typeof token !== 'string') return {};
   const parts = token.split('.');
   if (parts.length < 2) return {};

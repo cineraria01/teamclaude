@@ -399,6 +399,89 @@ It uses the Codex config and port independently from the Claude dashboard, so
 both proxies can stay online at the same time. For a non-interactive health
 check, use `teamclaude codex status`.
 
+## Antigravity (agy) Multi-account Setup
+
+The Antigravity pool (TeamAgy) uses its own config (`~/.config/teamagy.json`)
+and port (`3458`), so it runs next to the Claude and Codex proxies. It pools
+Google AI Pro/Ultra accounts for the Antigravity CLI (`agy`) and rotates them on
+quota, the way the Codex pool rotates ChatGPT accounts.
+
+Every command takes the `agy` prefix (`node src/index.js agy <command>`).
+Install a `teamagy` wrapper that pins both the mode and the agy config, and use
+it for everything below:
+
+```sh
+#!/bin/sh
+# ~/.local/bin/teamagy
+[ "$1" = agy ] && shift
+exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" \
+  node /path/to/teamclaude/src/index.js agy "$@"
+```
+
+Do not run `teamclaude agy …` (or `teamcodex agy …`) through a wrapper that
+pins `TEAMCLAUDE_CONFIG` to the Claude or Codex config. An agy pool and a
+Claude/Codex pool never share a config file: in agy mode an existing config
+must say `"provider": "agy"` (a Claude config usually has no `provider` key at
+all, and is refused just the same), only a missing file is created — as an agy
+config — and a Claude/Codex command refuses an agy config. The refusal happens
+before anything is written, reloaded, stopped or started.
+
+**Sign in to `agy` once first.** agy stays the client and keeps its own login,
+settings and MCP servers; the proxy replaces agy's credentials with the pool
+account's on every call. agy without a local login asks you to sign in.
+
+```bash
+# 1. The account agy is signed in with (macOS keychain)
+teamagy import --name pro-1
+#    elsewhere, export the same login JSON and import the file
+teamagy import --file ./agy-login.json --name pro-1
+
+# 2. More accounts: a Google sign-in in the browser (agy's own login is untouched)
+teamagy login --name pro-2
+
+# 3. Run agy through the pool (starts the proxy when it is not running)
+teamagy run
+teamagy run -- -p "summarize this repository"
+
+# Or point an agy you start yourself at the proxy
+eval "$(teamagy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
+```
+
+Import and login read the account's tier (`g1-pro-tier`, …) and project with
+one `loadCodeAssist` call and warn when the account has no paid tier. A
+re-import of the same Google account updates it in place. Removing an account
+never revokes its Google grant (your local agy login may be the same account).
+The OAuth client used for token refresh is read from the installed `agy` binary
+and cached in the config. The binary holds more than one candidate secret, so
+each is checked against Google's token endpoint with a bogus refresh token: the
+right client answers `invalid_grant`, a wrong one `invalid_client` (nothing is
+issued). If a cached client is ever refused later, it is re-checked the same way
+and the account is not blamed. When no single candidate passes, set
+`agyOAuthClientId` / `agyOAuthClientSecret` in the config yourself.
+
+Quota comes from each account's quota summary, polled at startup, every 10
+minutes, and after use (disabled or parked accounts are not polled). Gemini models and Claude/GPT models have separate 5-hour
+and weekly limits, so an account whose Gemini quota is spent still serves Claude
+and GPT models. `status` shows the Gemini group on the usual Session/Weekly line
+and the Claude/GPT group below it (the dashboard's third bar). Because agy keeps
+conversation state per account, a session stays on its account until that
+account cannot serve the model; when no account can, agy receives Google's own
+429 and shows its usual message.
+
+```bash
+teamagy status
+teamagy accounts
+teamagy reload            # re-read every account's quota summary now
+teamagy disable pro-1
+teamagy priority pro-2 0
+teamagy restart
+```
+
+Not covered: a login-free agy run, Gemini CLI, API-key or Vertex modes, keychain
+import outside macOS (use `--file`), reauth, subscription tracking, reset
+credits and cmux resume. Like the other pools it serves loopback clients; agy
+cannot send the proxy API key a remote client would need.
+
 ## Adding Accounts
 
 ### OAuth Login (recommended)
