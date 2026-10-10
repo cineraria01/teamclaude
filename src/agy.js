@@ -496,20 +496,24 @@ export function agyExhaustedBody(retryAfterSeconds) {
 
 /**
  * Point the request at the selected account's own project: rewrite a
- * top-level string `project` that differs from it. Anything else returns the
- * original buffer untouched (byte-identical).
+ * top-level string `project` that differs from it. With `fill` (inference
+ * calls), a missing or empty `project` becomes the account's project, else the
+ * shared consumer one — so a client that knows no project still works.
+ * Anything else returns the original buffer untouched (byte-identical).
  */
-export function rewriteAgyProject(body, projectId) {
-  if (typeof projectId !== 'string' || !projectId || !body?.length) return body;
+export function rewriteAgyProject(body, projectId, fill = false) {
+  const target = typeof projectId === 'string' && projectId ? projectId : null;
+  if ((!target && !fill) || !body?.length) return body;
   let json;
   try {
     json = JSON.parse(body.toString('utf8'));
   } catch {
     return body;
   }
-  if (!json || typeof json !== 'object' || Array.isArray(json)
-      || typeof json.project !== 'string' || json.project === projectId) return body;
-  json.project = projectId;
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return body;
+  if (fill && (json.project == null || json.project === '')) json.project = target || AGY_DEFAULT_PROJECT;
+  else if (target && typeof json.project === 'string' && json.project !== target) json.project = target;
+  else return body;
   return Buffer.from(JSON.stringify(json));
 }
 
