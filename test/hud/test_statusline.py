@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 
 HUD = Path(__file__).resolve().parents[2] / "src/hud"
 sys.path.insert(0, str(HUD))
-from statusline import account_state, bar, cache_row, clean, last_usage, main, pool, read_status, render, session_log, subscription_bar
+from statusline import account_state, claude_rows, bar, cache_row, clean, last_usage, main, pool, read_status, render, session_log, subscription_bar
 from unittest.mock import patch
 
 
@@ -204,6 +204,14 @@ def check():
     assert "[      -      ]" in lines[3].split(" 3p ")[1], lines[3]
     assert render({"accounts": []}, agy=True)[1] == "No accounts. Run: teamagy import --name pro-1"
     assert "3p" not in "\n".join(render(data, now=now))
+    # TeamClaude rows come from the installed Claude Code status line, told it is not under the footer.
+    with tempfile.TemporaryDirectory() as home:
+        renderer = Path(home) / ".claude/statusline-teamclaude.py"
+        renderer.parent.mkdir()
+        renderer.write_text("import os, sys\nsys.stdin.read()\n"
+                            "print('FLEET', os.environ.get('TEAMCLAUDE_HUD'), os.environ['TC_SL_CACHE_TTL'])\nprint('row')\n")
+        with patch.dict(os.environ, {"HOME": home, "TEAMCLAUDE_HUD": "1"}):
+            assert claude_rows() == ["FLEET None 2", "row"], claude_rows()
     print("PASS: rendering, account switch, missing quota, auth headers, local-only HTTP, offline state")
 
 

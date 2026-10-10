@@ -90,7 +90,7 @@ Single CLI binary (`src/index.js`) dispatches subcommands; `server` boots the pr
 
 Python, outside the Node runtime (merged 2026-10-10 from the former `cineraria01/teamcodex` and `cineraria01/teamclaude-statusline` repos):
 
-- **`src/hud/`** ships inside every pool install. `launcher.py` opens Codex (`teamcodex`) or agy (`teamagy` passes `--agy`) in a private tmux socket (`teamcodex-hud`/`teamagy-hud`) with `statusline.py --watch` as a footer pane reading `GET /teamclaude/status`. agy print mode and non-terminal runs skip the footer. `codex_login.py` is the browser-callback-paste Codex login.
+- **`src/hud/`** ships inside every pool install. `launcher.py` opens Claude Code (`teamclaude`/`claude` pass `--claude`), Codex (`teamcodex`) or agy (`teamagy` passes `--agy`) in a private tmux server (`<pool>-hud` socket, `src/hud/tmux.conf`) with `statusline.py --watch` as a footer pane reading `GET /teamclaude/status`; Claude rows come from `statusline/statusline-teamclaude.py` (the CLI pane gets `TEAMCLAUDE_HUD=1` so the in-app status line drops its table). Print/version flags, non-terminal runs and short windows skip the footer; Shift+Enter is mapped to each CLI's newline key. `codex_login.py` is the browser-callback-paste Codex login.
 - **`statusline/`** is the Claude Code status line, installed into `~/.claude` by `statusline/install.sh` (raw URLs point at this branch). Not part of the npm package.
 - `scripts/install.py` installs the Codex pool + wrapper on a new machine; `docs/install/` holds the full new-machine guide. Tests: `npm run test:hud` (`test_lifecycle.py` needs tmux).
 

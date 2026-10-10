@@ -565,6 +565,10 @@ def main():
     parts = []
     if model:
         parts.append(f"{MAGENTA}{model}{RESET}")
+    # Under the tmux account footer (teamclaude/claude) the footer already shows the table.
+    if os.environ.get("TEAMCLAUDE_HUD"):
+        print(" │ ".join(parts))
+        return
 
     data = load_status()
     if data == "missing":

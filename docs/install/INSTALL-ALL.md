@@ -76,14 +76,15 @@ rsync -a ~/.local/share/teamcodex-global/ ~/.local/share/teamclaude-global/
 cat > ~/.local/bin/teamclaude <<EOF
 #!/bin/sh
 # Claude pool (:3456). Own install (~/.local/share/teamclaude-global), cineraria01/teamproxy fork.
-# No args or Claude flags open Claude Code through the pool (= teamclaude run -- …); a subcommand goes after --.
+PKG=\$HOME/.local/share/teamclaude-global/lib/node_modules/teamcodex
+# No args or Claude flags open Claude Code with the account footer (src/hud/launcher.py --claude runs teamclaude run -- …;
+# -p and non-terminal runs skip the footer). A Claude subcommand goes after -- and runs without it.
 case "\${1-}" in
-  '') set -- run ;;
   -h|--help) ;;
   --) shift; set -- run -- "\$@" ;;
-  -*) set -- run -- "\$@" ;;
+  ''|-*) exec python3 "\$PKG/src/hud/launcher.py" --claude "\$@" ;;
 esac
-exec env TEAMCLAUDE_CONFIG=\$HOME/.config/teamclaude.json $(command -v node) \$HOME/.local/share/teamclaude-global/lib/node_modules/teamcodex/src/teamclaude.js "\$@"
+exec env TEAMCLAUDE_CONFIG=\$HOME/.config/teamclaude.json $(command -v node) "\$PKG/src/teamclaude.js" "\$@"
 EOF
 chmod 755 ~/.local/bin/teamclaude
 teamclaude --help | head -3
@@ -161,7 +162,7 @@ teamagy의 OAuth 클라이언트 비밀값은 저장소에 없다. 처음 가져
   원래 주간 리셋 기준이라 영향이 없고, 사용량 조회 실패는 계정을 격리하지 않는다(로그만 남는다).
 - 실제 만료일은 표시되지 않는다(약 1년). 발급일을 기록해 11개월쯤 미리 교체한다.
 - ⚠ 이 환경의 `teamclaude import|disable|remove`는 설정을 쓴 뒤 서버 재적재 단계에서 멈출 수 있다
-  (설정은 이미 써짐) — 그때는 위 SIGHUP으로 반영한다. `teamclaude reload` 명령은 없다.
+  (설정은 이미 써짐) — 그때는 위 SIGHUP으로 반영한다. `teamclaude reload`는 사용량을 다시 재는 명령이라 설정 재적재 대신 쓸 수 없다.
 
 ### 2-2. 계정 제거 (Codex)
 
@@ -286,7 +287,7 @@ cd ~/src/teamproxy/statusline && NO_PROBE=1 NO_RELOAD_PATCH=1 ./install.sh   # �
   빌드에는 그 명령이 없고 enable/disable/priority가 이미 라이브 반영된다.
 - 설치되는 것: `~/.claude/statusline-teamclaude.py`·`statusline-wrapper.py`·
   `statusline-autoupdate.sh`·`teamclaude-selector.sh`, `settings.json`의 `statusLine`,
-  셸 rc의 `claude` 함수 블록(`teamclaude run --`으로 프록시 경유 실행).
+  셸 rc의 `claude` 함수 블록(`teamclaude`와 같이 하단 줄 붙은 Claude Code, `claude N`은 N번 계정 고정).
 - 자동 업데이트는 기본 꺼짐(`~/.claude/teamclaude-statusline-config.json`의 `autoUpdate: false`).
 
 Claude Code 설정에 도구 검색을 켠다(비 Anthropic base URL에서는 기본 꺼져 있어 MCP 도구
@@ -301,8 +302,8 @@ json.dump(d, open(p, 'w'), indent=2, ensure_ascii=False); print(d['env'])
 PY
 ```
 
-새 셸을 열고 `type claude`가 함수(`teamclaude run`)로 나오는지, `claude`를 띄웠을 때 하단에
-계정별 Ses/Wk/Fbl 막대가 그려지는지 확인한다.
+새 셸을 열고 `type claude`가 함수로 나오는지, `claude`를 띄웠을 때 Claude Code 아래 tmux 하단 줄에
+계정별 Ses/Wk/Fbl 막대가 그려지는지(Claude 안의 상태줄에는 모델 줄만) 확인한다.
 
 ## 6. Codex 상태라인 (teamcodex) 확인
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Launch Codex (teamcodex) or agy (teamagy --agy) with a read-only account footer in an isolated tmux session."""
+"""Launch Claude Code (teamclaude --claude), Codex (teamcodex) or agy (teamagy --agy) with a read-only
+account footer in an isolated tmux session."""
 
 import os
 import shlex
@@ -9,33 +10,44 @@ import sys
 import uuid
 from pathlib import Path
 
-from statusline import read_status, render
+from statusline import claude_rows, read_status, render
 from codex_login import login
 
+# Each wrapper names its pool with the first argument (teamcodex passes none). `oneshot` flags print once and
+# exit, so a footer would vanish with them; those runs, and runs without a terminal, skip the footer.
+# `newline` is the key the CLI reads as a newline in its prompt: tmux cannot pass the CLI's own Shift+Enter
+# protocol through, so the footer's tmux server maps Shift+Enter to it.
+MODES = {
+    "claude": ("teamclaude", "Claude", ("p", "print", "v", "version"), "M-Enter"),
+    "agy": ("teamagy", "agy", ("p", "print", "prompt", "version"), "M-Enter"),
+    "codex": ("teamcodex", "Codex", ("V", "version"), "C-j"),
+}
+# The caller's choices that must reach the CLI even when the HUD tmux server was started by an earlier launch
+# (its panes get that server's environment): Codex home, and `claude N`'s pinned account.
+FORWARD = ("CODEX_HOME", "TC_ACCT", "TEAMCLAUDE_STATUSLINE_INDEX")
 
-def prints(arguments):
-    """agy print mode (-p/--print/--prompt) answers once and exits; a footer would vanish with it."""
-    return any(a.startswith("-") and a.lstrip("-").split("=")[0] in ("p", "print", "prompt") for a in arguments)
+
+def oneshot(arguments, flags):
+    return any(a.startswith("-") and a.lstrip("-").split("=")[0] in flags for a in arguments)
 
 
 def launch(arguments):
-    # The teamagy wrapper passes --agy first; teamcodex passes the arguments as they are.
-    agy = bool(arguments and arguments[0] == "--agy")
-    if agy:
+    mode = arguments[0][2:] if arguments and arguments[0] in ("--claude", "--agy") else "codex"
+    if mode != "codex":
         arguments = arguments[1:]
-    command, cli = ("teamagy", "agy") if agy else ("teamcodex", "Codex")
+    command, cli, flags, newline = MODES[mode]
     keep_alive = bool(arguments and arguments[0] == "--keep-alive")
     if keep_alive:
         arguments = arguments[1:]
-    if arguments and arguments[0] == "login" and not agy:
+    if arguments and arguments[0] == "login" and mode == "codex":
         return login(arguments[1:])
     if arguments == ["--help"]:
         print(f"Usage: {command} [{cli} flags]\n"
               f"  {command}                  {cli} + live account footer\n"
               + ("  teamcodex login [--name NAME]  Add an account with browser callback paste\n"
-                 "  teamcodex -- resume ID     Continue an existing conversation\n" if not agy else
-                 "  teamagy -p PROMPT          Print mode, no footer (also without a terminal)\n"
-                 "  teamagy -- SUBCOMMAND      agy subcommand (models, mcp, ...), no footer\n")
+                 "  teamcodex -- resume ID     Continue an existing conversation\n" if mode == "codex" else
+                 f"  {command} -p PROMPT          Print mode, no footer (also without a terminal)\n"
+                 f"  {command} -- SUBCOMMAND      {cli} subcommand, no footer\n")
               + f"  {command} --keep-alive [{cli} arguments]  Keep running after detach\n"
               "  Closing the terminal or Ctrl-b d stops the session by default.\n"
               f"  tmux -L {command}-hud attach   Reattach\n"
@@ -47,26 +59,24 @@ def launch(arguments):
     tmux, proxy = shutil.which("tmux"), shutil.which(command)
     if not proxy:
         sys.exit(f"Requires {command} on PATH")
-    terminal = sys.stdin.isatty() and sys.stdout.isatty()
-    if agy and (prints(arguments) or not terminal):
+    if oneshot(arguments, flags) or not (sys.stdin.isatty() and sys.stdout.isatty()):
         os.execv(proxy, [proxy, "run", "--", *arguments])
     if not tmux:
         sys.exit("Requires tmux. macOS: brew install tmux")
-    if not terminal:
-        sys.exit("Open teamcodex in a terminal. For scripts, use teamcodex run -- exec ...")
     try:
         data = read_status(Path.home() / f".config/{command}.json")
     except Exception:
         sys.exit(f"{command} proxy unavailable. Start it with: {command} server")
     size = shutil.get_terminal_size()
-    # Codex adds a cache-usage row under the accounts.
-    rows = len(render(data, agy=agy)) + (not agy)
+    # Claude rows come from the Claude Code status line; Codex adds a cache-usage row under the accounts.
+    rows = len(claude_rows()) if mode == "claude" else len(render(data, agy=mode == "agy")) + (mode == "codex")
     # Width is free: the footer clips long rows. Too short for a footer, run the CLI alone instead of refusing.
     if size.lines < rows + 10:
         print(f"{command}: under {rows + 10} rows, starting without the account footer", file=sys.stderr)
         os.execv(proxy, [proxy, "run", "--", *arguments])
     session = cli.lower() + "-" + uuid.uuid4().hex[:8]
-    base = [tmux, "-L", command + "-hud", "-f", "/dev/null"]
+    # Own socket and config (src/hud/tmux.conf): the user's normal tmux server and settings stay untouched.
+    base = [tmux, "-L", command + "-hud", "-f", str(Path(__file__).resolve().with_name("tmux.conf"))]
     env = dict(os.environ)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
@@ -77,7 +87,6 @@ def launch(arguments):
     # start directory forever; once that directory is deleted, new panes ignore
     # `-c` and start in the dead directory, and Codex exits with ENOENT.
     home = str(Path.home())
-    # A separate socket leaves the user's normal tmux server and config alone.
     def run(*args):
         return subprocess.run([*base, *args], check=True, env=env, cwd=home,
                               capture_output=True, text=True).stdout.strip()
@@ -91,20 +100,24 @@ def launch(arguments):
     # The explicit cd keeps the caller's directory even on a HUD server whose
     # own start directory no longer exists (see the note above).
     script = (shlex.join([*base, "wait-for", gate]) + " && cd " + shlex.quote(cwd) + " && "
-               + shlex.join([proxy, "run", "--", *arguments]) + "; "
+               # TEAMCLAUDE_HUD tells the Claude Code status line that the footer already shows the table.
+               + shlex.join([*(["env", "TEAMCLAUDE_HUD=1"] if mode == "claude" else []), proxy, "run", "--", *arguments]) + "; "
                + shlex.join([*base, "kill-session", "-t", session]))
     created = False
     try:
-        codex_home = [] if agy else ["-e", "CODEX_HOME=" + env.get("CODEX_HOME", str(Path.home() / ".codex"))]
+        if mode == "codex":
+            env.setdefault("CODEX_HOME", str(Path.home() / ".codex"))
+        forward = [arg for name in FORWARD if name in env for arg in ("-e", f"{name}={env[name]}")]
         top = run("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", session,
                   "-n", cli, "-c", cwd, "-x", str(size.columns), "-y", str(size.lines),
-                  *codex_home, "/bin/sh", "-c", script)
+                  *forward, "/bin/sh", "-c", script)
         created = True
         run("set-option", "-t", session, "status", "off")
         run("set-option", "-t", session, "mouse", "on")
+        run("bind-key", "-n", "S-Enter", "send-keys", newline)
         run("set-window-option", "-t", session, "pane-border-style", "fg=colour238")
         footer = run("split-window", "-d", "-P", "-F", "#{pane_id}", "-v", "-l", str(rows), "-t", top,
-                     sys.executable, str(statusline), "--watch", *(["--agy"] if agy else ["--codex-pane", top]))
+                     sys.executable, str(statusline), "--watch", *(["--codex-pane", top] if mode == "codex" else ["--" + mode]))
         for event in ("client-attached", "client-resized"):
             run("set-hook", "-t", session, event, f"resize-pane -t {footer} -y {rows}")
         if not keep_alive:

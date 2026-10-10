@@ -280,6 +280,24 @@ def cache_row(usage):
 NAMES = {False: ("TeamCodex", "teamcodex login --name codex-1"), True: ("TeamAgy", "teamagy import --name pro-1")}
 
 
+def claude_rows(color=True):
+    """TeamClaude rows: the Claude Code status line itself renders them, so the footer and the in-app table match.
+
+    Installed by statusline/install.sh into ~/.claude; a checkout falls back to its own copy.
+    """
+    renderer = next((path for path in (Path.home() / ".claude/statusline-teamclaude.py",
+                                       Path(__file__).resolve().parents[2] / "statusline/statusline-teamclaude.py")
+                     if path.is_file()), None)
+    if renderer is None:
+        return ["TeamClaude: Claude status line missing. Run: statusline/install.sh"]
+    env = {k: v for k, v in os.environ.items() if k != "TEAMCLAUDE_HUD"}
+    env["TC_SL_CACHE_TTL"] = "2"
+    if not color:
+        env["NO_COLOR"] = "1"
+    result = subprocess.run([sys.executable, str(renderer)], input=b"{}", env=env, capture_output=True, timeout=10)
+    return result.stdout.decode(errors="replace").rstrip("\n").split("\n")
+
+
 def render(data, now=None, color=False, width=100, agy=False):
     now = time.time() if now is None else now
     accounts = data["accounts"]
@@ -343,21 +361,23 @@ def render(data, now=None, color=False, width=100, agy=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agy", action="store_true", help="TeamAgy (Antigravity) pool instead of TeamCodex")
+    parser.add_argument("--claude", action="store_true", help="TeamClaude pool, rows from the Claude Code status line")
     parser.add_argument("--config", type=Path, help="default: ~/.config/teamcodex.json, or teamagy.json with --agy")
     parser.add_argument("--watch", action="store_true", help="refresh every two seconds")
     parser.add_argument("--plain", action="store_true", help="disable ANSI colors")
     parser.add_argument("--codex-pane", help="tmux pane whose latest request cache usage is shown")
     args = parser.parse_args()
-    command = "teamagy" if args.agy else "teamcodex"
+    command = "teamclaude" if args.claude else "teamagy" if args.agy else "teamcodex"
     config = args.config or Path.home() / f".config/{command}.json"
-    title, add_account = NAMES[args.agy]
+    title, add_account = ("TeamClaude", "teamclaude login") if args.claude else NAMES[args.agy]
     color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and not args.plain
     watching = args.watch and sys.stdout.isatty()
     try:
         while True:
             failed = False
             try:
-                rows = render(read_status(config), color=color, width=shutil.get_terminal_size().columns, agy=args.agy)
+                rows = (claude_rows(color) if args.claude else
+                        render(read_status(config), color=color, width=shutil.get_terminal_size().columns, agy=args.agy))
             except FileNotFoundError:
                 rows = [f"{title}: config missing. Run: {add_account}"]
                 failed = True

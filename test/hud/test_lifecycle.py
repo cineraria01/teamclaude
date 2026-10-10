@@ -37,9 +37,12 @@ def check():
     tmux = shutil.which("tmux")
     assert tmux, "Install tmux to run this check"
     root = HUD
-    # agy print mode answers once and exits, so it never gets a footer.
-    assert launcher.prints(["-p", "hi"]) and launcher.prints(["--print=x"]) and launcher.prints(["--model", "m", "--prompt", "x"])
-    assert not launcher.prints(["--prompt-interactive", "x"]) and not launcher.prints(["hi -p"]) and not launcher.prints([])
+    # Print/version runs answer once and exit, so they never get a footer. Codex -p is --profile, not print.
+    oneshot, modes = launcher.oneshot, launcher.MODES
+    assert oneshot(["-p", "hi"], modes["agy"][2]) and oneshot(["--print=x"], modes["claude"][2])
+    assert oneshot(["--model", "m", "--prompt", "x"], modes["agy"][2]) and oneshot(["--version"], modes["codex"][2])
+    assert not oneshot(["--prompt-interactive", "x"], modes["agy"][2]) and not oneshot(["hi -p"], modes["claude"][2])
+    assert not oneshot(["-p", "work"], modes["codex"][2]) and not oneshot([], modes["claude"][2])
     with tempfile.TemporaryDirectory(prefix="tcodex-test-") as directory:
         fake = Path(directory) / "teamagy"
         fake.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
@@ -70,7 +73,7 @@ def check():
         assert json.loads(record.read_text()) == ["run", "--", "--model", "m"], record.read_text()
     print("PASS: a short terminal runs the CLI without the footer")
     for mode in ("close", "detach", "keep-alive", "two-clients", "attach-failure", "keep-attach-failure",
-                 "stale-server-cwd", "agy"):
+                 "stale-server-cwd", "agy", "claude"):
         with tempfile.TemporaryDirectory(prefix="tcodex-test-") as directory:
             path = Path(directory)
             socket = path.name
@@ -85,21 +88,22 @@ def check():
                                ("if 'attach-session' in a: sys.exit(1)\n" if mode.endswith("attach-failure") else "") +
                                f"os.execv({tmux!r}, [{tmux!r}] + a)\n")
             wrapper.chmod(0o755)
-            proxy = path / ("teamagy" if mode == "agy" else "teamcodex")
+            proxy = path / {"agy": "teamagy", "claude": "teamclaude"}.get(mode, "teamcodex")
             record = path / "processes.json"
             proxy.write_text(f"#!{sys.executable}\n" +
                              "import json, os, subprocess, sys, time\nfrom pathlib import Path\n" +
                              "child = subprocess.Popen(['sleep', '300'])\n" +
-                             f"Path({str(record)!r}).write_text(json.dumps([os.getpid(), child.pid, sys.argv[1:], os.getcwd()]))\n" +
+                             f"Path({str(record)!r}).write_text(json.dumps([os.getpid(), child.pid, sys.argv[1:], os.getcwd(), os.environ.get('TEAMCLAUDE_HUD')]))\n" +
                              "time.sleep(300)\n")
             proxy.chmod(0o755)
             arguments = (["--keep-alive"] if mode.startswith("keep") else []) + ["resume", "test-id"]
-            if mode == "agy":
-                arguments = ["--agy", "--model", "m"]
+            if mode in ("agy", "claude"):
+                arguments = ["--" + mode, "--model", "m"]
             runner = ("import launcher, shutil\noriginal = shutil.which\n" +
                       f"launcher.shutil.which = lambda name: {str(wrapper)!r} if name == 'tmux' else " +
                       f"{str(proxy)!r} if name == {proxy.name!r} else original(name)\n" +
                       "launcher.read_status = lambda path: {}\nlauncher.render = lambda data, agy=False: ['footer']\n" +
+                      "launcher.claude_rows = lambda: ['footer']\n" +
                       f"raise SystemExit(launcher.launch({arguments!r}))\n")
             masters, clients, pids = [], [], []
 
@@ -136,9 +140,11 @@ def check():
                         eventually(record.exists)
                         subprocess.run(base + ["kill-session", "-t", "seed"], check=True)
                     eventually(lambda: sessions().endswith(" 1") and record.exists())
-                    parent, child, forwarded, launched_in = json.loads(record.read_text())
+                    parent, child, forwarded, launched_in, hud = json.loads(record.read_text())
+                    # Only Claude Code is told that the footer shows the account table.
+                    assert hud == ("1" if mode == "claude" else None), (mode, hud)
                     pids = [parent, child]
-                    expected = ["--model", "m"] if mode == "agy" else ["resume", "test-id"]
+                    expected = ["--model", "m"] if mode in ("agy", "claude") else ["resume", "test-id"]
                     assert forwarded == ["run", "--", *expected], forwarded
                     assert launched_in == str(root), launched_in
                     session = sessions().split()[0]
