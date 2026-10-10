@@ -366,9 +366,24 @@ rotation에서 제외하고, 이후 유효한 사용량 폴이 성공하면 자�
 Antigravity 풀(TeamAgy)은 `~/.config/teamagy.json`과 기본 포트 `3458`을 따로
 씁니다. 그래서 Claude·Codex 프록시와 동시에 실행할 수 있습니다. Antigravity
 CLI(`agy`)가 쓰는 Google AI Pro/Ultra 계정을 모아, Codex 풀이 ChatGPT 계정을
-돌리는 것처럼 쿼터에 따라 계정을 바꿉니다. 모든 하위 명령에
-`agy` 접두를 붙여 씁니다(`teamcodex agy <명령>`도 같습니다. `teamagy` 같은 셸
-래퍼는 `TEAMCLAUDE_PROVIDER=agy`만 지정하면 됩니다).
+돌리는 것처럼 쿼터에 따라 계정을 바꿉니다.
+
+모든 명령에 `agy` 접두를 붙입니다(`node src/index.js agy <명령>`). 모드와 agy
+설정 경로를 함께 고정하는 `teamagy` 래퍼를 두고 아래 명령을 모두 그것으로
+실행하세요.
+
+```sh
+#!/bin/sh
+# ~/.local/bin/teamagy
+[ "$1" = agy ] && shift
+exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" \
+  node /path/to/teamclaude/src/index.js agy "$@"
+```
+
+`TEAMCLAUDE_CONFIG`를 Claude·Codex 설정으로 고정한 래퍼로 `teamclaude agy …`
+(또는 `teamcodex agy …`)를 실행하지 마세요. agy 풀과 Claude·Codex 풀은 설정
+파일을 함께 쓰지 않으므로, 프록시가 그 조합(반대 경우도)을 아무것도 쓰기 전에
+거부합니다.
 
 **먼저 `agy`에 한 번 로그인해 두세요.** 클라이언트는 agy 그대로이고 자기
 로그인·설정·MCP를 유지합니다. 프록시가 매 호출마다 agy의 자격 증명을 풀 계정의
@@ -376,19 +391,19 @@ CLI(`agy`)가 쓰는 Google AI Pro/Ultra 계정을 모아, Codex 풀이 ChatGPT 
 
 ```bash
 # 1. agy에 로그인된 계정 가져오기 (macOS 키체인)
-teamclaude agy import --name pro-1
+teamagy import --name pro-1
 #    다른 OS에서는 같은 로그인 JSON을 파일로 가져오기
-teamclaude agy import --file ./agy-login.json --name pro-1
+teamagy import --file ./agy-login.json --name pro-1
 
 # 2. 계정 더 넣기: 브라우저 Google 로그인 (agy 자체 로그인은 건드리지 않음)
-teamclaude agy login --name pro-2
+teamagy login --name pro-2
 
 # 3. 풀을 거쳐 agy 실행 (프록시가 꺼져 있으면 자동으로 띄움)
-teamclaude agy run
-teamclaude agy run -- -p "summarize this repository"
+teamagy run
+teamagy run -- -p "summarize this repository"
 
 # 직접 띄우는 agy를 프록시로 보내기
-eval "$(teamclaude agy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
+eval "$(teamagy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
 ```
 
 가져오기와 로그인은 `loadCodeAssist`를 한 번 불러 계정 등급(`g1-pro-tier` 등)과
@@ -398,7 +413,7 @@ eval "$(teamclaude agy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
 클라이언트는 설치된 `agy` 바이너리에서 읽어 설정에 저장합니다. 바이너리를 못
 찾으면 설정에 `agyOAuthClientId`·`agyOAuthClientSecret`을 넣으세요.
 
-쿼터는 계정별 쿼터 요약을 시작할 때, 10분마다, 사용 후에 읽어 옵니다. Gemini
+쿼터는 계정별 쿼터 요약을 시작할 때, 10분마다, 사용 후에 읽어 옵니다(꺼 둔 계정과 격리된 계정은 읽지 않음). Gemini
 모델과 Claude/GPT 모델은 5시간·주간 한도가 따로라서, Gemini 쿼터를 다 쓴 계정도
 Claude·GPT 모델은 계속 처리합니다. `status`는 평소의 Session/Weekly 줄에 Gemini
 그룹을, 그 아래 줄에 Claude/GPT 그룹을 보여 줍니다(대시보드의 세 번째 막대).
@@ -407,12 +422,12 @@ agy는 계정마다 대화 상태를 들고 있으므로, 한 세션은 그 계�
 429를 그대로 받아 평소 메시지를 보여 줍니다.
 
 ```bash
-teamclaude agy status
-teamclaude agy accounts
-teamclaude agy reload            # 모든 계정의 쿼터 요약을 지금 다시 읽기
-teamclaude agy disable pro-1
-teamclaude agy priority pro-2 0
-teamclaude agy restart
+teamagy status
+teamagy accounts
+teamagy reload            # 모든 계정의 쿼터 요약을 지금 다시 읽기
+teamagy disable pro-1
+teamagy priority pro-2 0
+teamagy restart
 ```
 
 범위 밖: 로그인 없는 agy 실행, Gemini CLI, API key·Vertex 방식, macOS 밖의 키체인

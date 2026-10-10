@@ -55,6 +55,7 @@ import {
   agyAffinityKey,
   agyExhaustedBody,
   agyModelGroup,
+  agyUsageFromResponse,
   classifyAgy429,
   isAgyInferencePath,
   parseAgyQuotaSummary,
@@ -874,7 +875,10 @@ export function createProxyServer(accountManager, config, hooks = {}) {
     if (!agyQuotaRefresh || warmupClosed) return -1;
     if (agyRefreshPromise) return agyRefreshPromise;
     agyRefreshPromise = (async () => {
-      const targets = accountManager.accounts.filter(a => a.provider === 'agy' && a.credential);
+      // Disabled and parked accounts are not polled: proxy-originated traffic
+      // stays on accounts that can actually serve.
+      const targets = accountManager.accounts.filter(a => a.provider === 'agy' && a.credential
+        && a.enabled !== false && a.status !== 'error');
       const outcomes = await Promise.all(targets.map(a => refreshAgyAccount(a)));
       return { targets: targets.length, measured: outcomes.filter(Boolean).length };
     })();
@@ -885,14 +889,26 @@ export function createProxyServer(accountManager, config, hooks = {}) {
     }
   }
 
-  // Fire-and-forget, single-flight per account (never delays a response).
+  // Fire-and-forget, single-flight per account (never delays a response). An
+  // exhaustion refresh that arrives while another refresh is in flight is
+  // queued and runs right after it — that in-flight one was dispatched before
+  // the 429 and cannot say which bucket is spent.
   function refreshAgyInBackground(account, exhaustedGroup = null) {
-    if (!agyQuotaRefresh || warmupClosed || account?.provider !== 'agy' || account._usageRefreshing) return;
+    if (!agyQuotaRefresh || warmupClosed || account?.provider !== 'agy') return;
     if (accountManager.accounts[account.index] !== account) return;
+    if (account._usageRefreshing) {
+      if (exhaustedGroup) (account._agyPendingExhausted ??= new Set()).add(exhaustedGroup);
+      return;
+    }
     account._usageRefreshing = true;
     refreshAgyAccount(account, exhaustedGroup)
       .catch(() => { /* best-effort */ })
-      .finally(() => { account._usageRefreshing = false; });
+      .finally(() => {
+        account._usageRefreshing = false;
+        const pending = account._agyPendingExhausted;
+        delete account._agyPendingExhausted;
+        for (const group of pending ?? []) refreshAgyInBackground(account, group);
+      });
   }
 
   function maybeRefreshAgyQuota(account) {
@@ -2692,6 +2708,13 @@ function startContinuityDeadline(ctx) {
   return ctx.continuityDeadlineAt;
 }
 
+// Proxy-made 401 in the client's own error shape: Google RPC for agy.
+function authFailureBody(ctx, message) {
+  return ctx.provider === 'agy'
+    ? { error: { code: 401, message, status: 'UNAUTHENTICATED' } }
+    : { type: 'error', error: { type: 'authentication_error', message } };
+}
+
 function sendSaved429(res, ctx) {
   if (!ctx.last429 || res.destroyed || res.headersSent) return false;
   ctx.status = 429;
@@ -2954,15 +2977,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       // the operator to re-login would send them after the wrong thing.
       const requestScoped = ctx.authCascade && accts.some(a => a.status !== 'error');
       res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        type: 'error',
-        error: {
-          type: 'authentication_error',
-          message: requestScoped
-            ? `All ${accts.length} accounts rejected this request's authentication; the accounts stay in rotation.`
-            : `All ${accts.length} accounts failed authentication. Re-login required.`,
-        },
-      }));
+      res.end(JSON.stringify(authFailureBody(ctx, requestScoped
+        ? `All ${accts.length} accounts rejected this request's authentication; the accounts stay in rotation.`
+        : `All ${accts.length} accounts failed authentication. Re-login required.`)));
       return;
     }
     // Fleet-wide dead end at selection time. If the REQUESTED model has no
@@ -3404,15 +3421,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       ctx.status = 401;
       if (!res.headersSent) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          type: 'error',
-          error: {
-            type: 'authentication_error',
-            message: ctx.authCascade
-              ? 'All attempted accounts rejected this request\'s authentication; the accounts stay in rotation.'
-              : 'All accounts failed authentication.',
-          },
-        }));
+        res.end(JSON.stringify(authFailureBody(ctx, ctx.authCascade
+          ? 'All attempted accounts rejected this request\'s authentication; the accounts stay in rotation.'
+          : 'All accounts failed authentication.')));
       }
       return;
     }
@@ -3580,7 +3591,9 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       ctx.last429 = { body: responseBody, headers: responseHeaders };
       const verdict = classifyAgy429(responseBody);
       const group = agyModelGroup(ctx.model);
-      const exhausted = group != null && !verdict.capacity;
+      // Only an inference call spends the group's quota; a 429 on anything
+      // else (countTokens, model lists, …) is treated like capacity.
+      const exhausted = group != null && !verdict.capacity && isAgyInferencePath(req.url);
       if (exhausted) ctx.agyExhausted?.(account, group, verdict.retryDelayMs);
       ctx.tried429.add(account);
       const canFailOver = !res.destroyed && retryCount < maxRetries
@@ -4880,6 +4893,9 @@ function parseSSEUsage(event, account, accountManager) {
         sumInputTokens(data.response.usage),
         data.response.usage.output_tokens,
       );
+    } else if (data.response?.usageMetadata) {
+      const usage = agyUsageFromResponse(data.response);
+      if (usage) accountManager.updateUsage(account, usage.input, usage.output);
     }
   } catch {
     // not valid JSON, skip
@@ -4891,6 +4907,9 @@ function extractUsageFromBody(buffer, account, accountManager) {
     const json = JSON.parse(buffer.toString());
     if (json.usage) {
       accountManager.updateUsage(account, sumInputTokens(json.usage), json.usage.output_tokens);
+    } else {
+      const usage = agyUsageFromResponse(json?.response);
+      if (usage) accountManager.updateUsage(account, usage.input, usage.output);
     }
   } catch {
     // not JSON or no usage

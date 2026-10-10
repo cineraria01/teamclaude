@@ -203,6 +203,9 @@ test('agy run points agy at the running proxy with the user\'s environment, and 
     await writeFile(configPath, JSON.stringify({
       provider: 'agy',
       proxy: { port, apiKey: 'proxy-key' },
+      // Never a real endpoint, even if a server were auto-started here.
+      agyUpstream: 'http://127.0.0.1:9',
+      agyQuotaRefresh: false,
       accounts: [{ name: 'main', provider: 'agy', type: 'oauth', accessToken: 'x', refreshToken: 'y' }],
     }));
     await writeFile(fakeAgy, `#!/usr/bin/env node
@@ -243,6 +246,94 @@ console.log(JSON.stringify({
     assert.equal(env.stdout.trim(), `export CLOUD_CODE_URL=http://127.0.0.1:${port}`);
   } finally {
     await new Promise(resolve => statusServer.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('env-only agy mode (no prefix) gets the agy help and refuses Claude/Codex-only commands', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-env-'));
+  try {
+    const env = isolatedEnv(dir, { TEAMCLAUDE_PROVIDER: 'agy' });
+    const help = await runCli(['help'], env);
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /TeamAgy/);
+    for (const command of ['api', 'reauth', 'subscription']) {
+      const refused = await runCli([command, 'x'], env);
+      assert.equal(refused.status, 1, command);
+      assert.match(refused.stderr, /not available for the Antigravity/, command);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('agy and Claude/Codex never share a config file; the refusal writes nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-mismatch-'));
+  const claudeConfig = join(dir, 'teamclaude.json');
+  const agyConfig = join(dir, 'teamagy.json');
+  const loginFile = join(dir, 'login.json');
+  const claudeBody = JSON.stringify({ provider: 'anthropic', proxy: { port: 1, apiKey: 'k' }, accounts: [] });
+  const agyBody = JSON.stringify({ provider: 'agy', proxy: { port: 1, apiKey: 'k' }, agyUpstream: 'http://127.0.0.1:9', accounts: [] });
+  try {
+    await writeFile(claudeConfig, claudeBody);
+    await writeFile(agyConfig, agyBody);
+    await writeFile(loginFile, JSON.stringify(login('ya29.x')));
+
+    const agyOnClaude = await runCli(['agy', 'import', '--file', loginFile],
+      isolatedEnv(dir, { TEAMCLAUDE_CONFIG: claudeConfig, TEAMAGY_AGY_BIN: join(dir, 'none') }));
+    assert.equal(agyOnClaude.status, 1);
+    assert.match(agyOnClaude.stderr, /"anthropic" config, not an Antigravity/);
+    assert.equal(await readFile(claudeConfig, 'utf8'), claudeBody);
+
+    const envAgyOnClaude = await runCli(['status'], isolatedEnv(dir, { TEAMCLAUDE_CONFIG: claudeConfig, TEAMCLAUDE_PROVIDER: 'agy' }));
+    assert.equal(envAgyOnClaude.status, 1);
+    assert.match(envAgyOnClaude.stderr, /not an Antigravity/);
+
+    for (const prefix of [[], ['codex']]) {
+      const otherOnAgy = await runCli([...prefix, 'status'], isolatedEnv(dir, { TEAMCLAUDE_CONFIG: agyConfig }));
+      assert.equal(otherOnAgy.status, 1, prefix.join(' '));
+      assert.match(otherOnAgy.stderr, /Antigravity \(agy\) config — refusing/, prefix.join(' '));
+    }
+    assert.equal(await readFile(agyConfig, 'utf8'), agyBody);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a name match with another Google account does not inherit its tier or project', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-rename-'));
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  const configPath = join(dir, 'teamagy.json');
+  const loginFile = join(dir, 'login.json');
+  try {
+    await writeFile(configPath, JSON.stringify({
+      provider: 'agy',
+      proxy: { port: await freePort(), apiKey: 'k' },
+      agyUpstream: `http://127.0.0.1:${upstreamPort}`,
+      agyOAuthClientId: 'fake-id',
+      agyOAuthClientSecret: 'fake-secret',
+      accounts: [{
+        name: 'main', provider: 'agy', type: 'oauth', accountUuid: 'other-google-sub',
+        accessToken: 'old', refreshToken: 'old', tierId: 'g1-ultra-tier', projectId: 'other-project', priority: 0,
+      }],
+    }));
+    await writeFile(loginFile, JSON.stringify(login('ya29.new')));
+    const result = await runCli(['agy', 'import', '--file', loginFile, '--name', 'main'],
+      isolatedEnv(dir, { TEAMCLAUDE_CONFIG: configPath, TEAMAGY_AGY_BIN: join(dir, 'none') }));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /loadCodeAssist failed/);
+    const [account] = JSON.parse(await readFile(configPath, 'utf8')).accounts;
+    assert.equal(account.accountUuid, 'google-sub-1');
+    assert.equal(account.accessToken, 'ya29.new');
+    assert.equal(account.tierId, undefined);
+    assert.equal(account.projectId, undefined);
+    assert.equal(account.priority, 0, 'routing settings of the slot are kept');
+  } finally {
+    await new Promise(resolve => upstream.close(resolve));
     await rm(dir, { recursive: true, force: true });
   }
 });

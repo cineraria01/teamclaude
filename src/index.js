@@ -185,14 +185,31 @@ if (cliProvider !== 'anthropic') {
   process.env.TEAMCLAUDE_PROVIDER = cliProvider;
 }
 const command = args[0];
+// agy mode = the `agy` prefix (which sets the env above) or an inherited
+// TEAMCLAUDE_PROVIDER=agy (the supervised worker, a wrapper).
+const AGY_MODE = process.env.TEAMCLAUDE_PROVIDER === 'agy';
 // Claude/Codex-only commands are not offered for the Antigravity pool.
 const AGY_UNSUPPORTED_COMMANDS = new Set([
   'reauth', 'subscription', 'api', 'install-claude-wrapper', 'uninstall-claude-wrapper',
 ]);
-if (cliProvider === 'agy' && AGY_UNSUPPORTED_COMMANDS.has(command)) {
+if (AGY_MODE && AGY_UNSUPPORTED_COMMANDS.has(command)) {
   console.error(`${command} is not available for the Antigravity (agy) pool.\n`);
   showHelp();
   process.exit(1);
+}
+// An agy pool and a Claude/Codex pool never share a config file: refuse the
+// mismatch before any command writes it, reloads a server, or starts one.
+// (Only combinations involving agy; Claude ⇄ Codex keeps its old behavior.)
+if (command !== 'help' && command !== '--help' && command !== '-h') {
+  const configuredProvider = (await loadConfig().catch(() => null))?.provider;
+  if (agyConfigMismatch(configuredProvider, AGY_MODE)) {
+    console.error(AGY_MODE
+      ? `[TeamAgy] ${getConfigPath()} is a "${configuredProvider}" config, not an Antigravity (agy) one — refusing to use it.\n`
+        + 'Point TEAMCLAUDE_CONFIG at the agy config (e.g. ~/.config/teamagy.json), or use the teamagy wrapper.'
+      : `[TeamClaude] ${getConfigPath()} is an Antigravity (agy) config — refusing to use it outside agy mode.\n`
+        + 'Run it with the agy prefix: teamagy …, or node src/index.js agy ….');
+    process.exit(1);
+  }
 }
 
 switch (command) {
@@ -1373,8 +1390,8 @@ async function proxyWorkerCommand() {
       console.error('  teamcodex codex login      Isolated Codex OAuth login');
       console.error('  teamcodex codex import     Import the current Codex login');
     } else if (agyMode) {
-      console.error('  teamcodex agy import       Import the local agy login (macOS keychain)');
-      console.error('  teamcodex agy login        Google sign-in for another account');
+      console.error('  teamagy import             Import the local agy login (macOS keychain)');
+      console.error('  teamagy login              Google sign-in for another account');
     } else {
       console.error('  teamcodex import           Import from Claude Code');
       console.error('  teamcodex login            OAuth login via browser');
@@ -1532,6 +1549,9 @@ async function proxyWorkerCommand() {
       syncAccounts: async () => {
         const diskConfig = await accountManager.readAfterAccountFlagWrites(() => loadConfig());
         if (!diskConfig) return 0;
+        if (agyConfigMismatch(diskConfig.provider, agyMode)) {
+          throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider}" config; not reloading it`);
+        }
         return syncAccountsFromDisk(diskConfig, config, accountManager);
       },
       // R also forces a fleet-wide quota re-measure. `server` is assigned below
@@ -1597,6 +1617,9 @@ async function proxyWorkerCommand() {
     liveSyncChain = liveSyncChain.then(async () => {
       const diskConfig = await accountManager.readAfterAccountFlagWrites(() => loadConfig());
       if (!diskConfig) return;
+      if (agyConfigMismatch(diskConfig.provider, agyMode)) {
+        throw new Error(`${getConfigPath()} now holds a "${diskConfig.provider}" config; not reloading it`);
+      }
       await syncAccountsFromDisk(diskConfig, config, accountManager);
       if (codexMode || agyMode) await server.refreshQuotaAll();
       if (process.connected) {
@@ -1671,12 +1694,12 @@ async function proxyWorkerCommand() {
       console.log(codexMode
         ? '  Run Codex through proxy:   teamcodex codex run'
         : agyMode
-          ? '  Run agy through proxy:     teamcodex agy run'
+          ? '  Run agy through proxy:     teamagy run   (or: node src/index.js agy run)'
           : '  Run Claude through proxy:  teamcodex run');
       console.log(codexMode
         ? '  Show env vars:             teamcodex codex env'
         : agyMode
-          ? '  Show env vars:             teamcodex agy env'
+          ? '  Show env vars:             teamagy env   (or: node src/index.js agy env)'
           : '  Show env vars:             teamcodex env');
       console.log(sep);
       console.log('');
@@ -3281,6 +3304,10 @@ async function apiCommand() {
       account = accounts.find(a => a.type === 'oauth') || accounts[0];
       if (!account) { console.error('No accounts configured'); process.exit(1); }
     }
+    if (account.provider === 'agy') {
+      console.error(`The api command does not support Antigravity (agy) accounts ("${account.name}").`);
+      process.exit(1);
+    }
 
     if (account.type === 'oauth' && isTokenExpiringSoon(account.expiresAt)) {
       if (running) {
@@ -3501,10 +3528,11 @@ async function uninstallClaudeWrapperCommand() {
 // ── help ────────────────────────────────────────────────────
 
 function showHelp() {
-  if (cliProvider === 'agy') {
+  if (AGY_MODE) {
     console.log(`TeamAgy - Multi-account Antigravity (agy) proxy
 
-Usage: teamcodex agy [command] [options]
+Usage: teamagy [command] [options]
+       node src/index.js agy [command] [options]
 
 Commands:
   server              Start the Antigravity proxy server (default port 3458)
@@ -3702,6 +3730,12 @@ async function revokeReplacedCodexToken(previous, next, label) {
 
 // ── Antigravity (agy) ───────────────────────────────────────
 
+function assertAgyConfig(cfg) {
+  if (cfg.provider && cfg.provider !== 'agy') {
+    throw new Error(`${getConfigPath()} is a "${cfg.provider}" config, not an Antigravity (agy) one — not writing to it.`);
+  }
+}
+
 function agyUpstreamOf(config) {
   return config?.agyUpstream || config?.upstream || AGY_DEFAULT_UPSTREAM;
 }
@@ -3714,6 +3748,7 @@ async function ensureAgyOAuthClient(config, clientIdHint = null) {
   const client = resolveAgyOAuthClient({ config, clientIdHint, binaryPath: locateAgyBinary() });
   if (client.source !== 'config') {
     await atomicConfigUpdate(cfg => {
+      assertAgyConfig(cfg);
       cfg.agyOAuthClientId = client.clientId;
       cfg.agyOAuthClientSecret = client.clientSecret;
     });
@@ -3753,7 +3788,12 @@ async function agyImportCommand(config) {
     console.error(`[TeamAgy] Import failed: ${err.message}`);
     process.exit(1);
   }
-  await upsertAgyAccount(config, argValue('--name'), creds, file ? 'file' : 'keychain');
+  try {
+    await upsertAgyAccount(config, argValue('--name'), creds, file ? 'file' : 'keychain');
+  } catch (err) {
+    console.error(`[TeamAgy] Import failed: ${err.message}`);
+    process.exit(1);
+  }
 }
 
 async function agyLoginCommand(config) {
@@ -3775,7 +3815,7 @@ async function agyLoginCommand(config) {
 async function agyRunCommand(config = null) {
   config ??= await loadOrCreateConfig();
   if (!Array.isArray(config.accounts) || config.accounts.length === 0) {
-    console.error('[TeamAgy] No accounts configured. Add one first: teamcodex agy import (the local agy login) or teamcodex agy login.');
+    console.error('[TeamAgy] No accounts configured. Add one first: teamagy import (the local agy login) or teamagy login (generic: node src/index.js agy import).');
     process.exit(1);
   }
   let running;
@@ -3840,6 +3880,7 @@ async function upsertAgyAccount(config, explicitName, creds, source) {
   let name = explicitName || null;
   let action = 'Added';
   const savedConfig = await atomicConfigUpdate(cfg => {
+    assertAgyConfig(cfg);
     let idx = cfg.accounts.findIndex(a => a.accountUuid === creds.accountUuid);
     if (idx < 0 && name) idx = cfg.accounts.findIndex(a => a.name === name);
     const previous = idx >= 0 ? cfg.accounts[idx] : null;
@@ -3860,8 +3901,11 @@ async function upsertAgyAccount(config, explicitName, creds, source) {
       expiresAt: creds.expiresAt,
       email: creds.email,
     };
-    const tierId = assist?.tierId || previous?.tierId;
-    const projectId = assist?.projectId || previous?.projectId;
+    // A name match may be a different Google account: inherit its tier and
+    // project only when it is the same identity.
+    const sameIdentity = previous?.accountUuid === creds.accountUuid;
+    const tierId = assist?.tierId || (sameIdentity ? previous.tierId : null);
+    const projectId = assist?.projectId || (sameIdentity ? previous.projectId : null);
     if (tierId) account.tierId = tierId;
     if (projectId) account.projectId = projectId;
     if (previous) {
@@ -4108,6 +4152,12 @@ function isCodexMode(config) {
   // anthropic semantics (stream recovery, auth headers, default upstream).
   return config?.provider === 'codex' || cliProvider === 'codex'
     || process.env.TEAMCLAUDE_PROVIDER === 'codex';
+}
+
+/** True when a config's provider and the agy-ness of the mode disagree (combinations involving agy only). */
+function agyConfigMismatch(configuredProvider, agyMode) {
+  return Boolean(configuredProvider)
+    && (agyMode ? configuredProvider !== 'agy' : configuredProvider === 'agy');
 }
 
 function isAgyMode(config) {

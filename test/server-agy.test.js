@@ -286,7 +286,7 @@ test('when every account is exhausted the upstream 429 body reaches agy unchange
 test('agy SSE passes through byte-identical', async () => {
   const frames = [
     'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"안녕"}]}}],"responseId":"r1"},"traceId":"t1","metadata":{}}\r\n\r\n',
-    'data: {"response":{"candidates":[{"content":{"parts":[{"text":"하세요 👋"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3}},"traceId":"t1","metadata":{}}\n\n',
+    'data: {"response":{"candidates":[{"content":{"parts":[{"text":"하세요 👋"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"totalTokenCount":11}},"traceId":"t1","metadata":{}}\n\n',
     ': trailing comment without a newline',
   ];
   const expected = Buffer.from(frames.join(''));
@@ -300,7 +300,7 @@ test('agy SSE passes through byte-identical', async () => {
     }
     res.end();
   });
-  const { proxy, url } = await agyProxy([agyAccount('a')], upstream.url);
+  const { manager, proxy, url } = await agyProxy([agyAccount('a')], upstream.url);
   try {
     const response = await fetch(`${url}/v1internal:streamGenerateContent?alt=sse`, {
       method: 'POST',
@@ -312,6 +312,10 @@ test('agy SSE passes through byte-identical', async () => {
     const received = Buffer.from(await response.arrayBuffer());
     assert.equal(received.equals(expected), true, 'no synthetic frames, no re-framing');
     assert.equal(upstream.calls[0].url, '/v1internal:streamGenerateContent?alt=sse');
+    // Usage comes from the final frame's usageMetadata (status token totals).
+    await waitFor(() => manager.accounts[0].usage.totalOutputTokens > 0);
+    assert.equal(manager.accounts[0].usage.totalInputTokens, 3);
+    assert.equal(manager.accounts[0].usage.totalOutputTokens, 8);
   } finally {
     await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
   }
@@ -342,6 +346,132 @@ test('a trajectory\'s ACL write and its inference stay on one account across con
     manager.currentIndex = 0; // the sticky primary moves meanwhile
     await post('/v1internal:generateContent', inferenceBody('gemini-3.6-flash-low'));
     assert.deepEqual(upstream.calls.map(call => call.headers.authorization), ['Bearer tok-b', 'Bearer tok-b']);
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
+  }
+});
+
+test('a 429 on a non-inference call with a model is capacity: no group block', async () => {
+  const upstream = await agyUpstream((call, res) => {
+    res.writeHead(429, { 'content-type': 'application/json' });
+    res.end(exhausted429('RATE_LIMIT_EXCEEDED', '9s'));
+  });
+  const { manager, proxy, url } = await agyProxy([agyAccount('a'), agyAccount('b'), agyAccount('c')], upstream.url);
+  try {
+    const response = await fetch(`${url}/v1internal:countTokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'aicode-consumers', model: 'gemini-3.6-flash-low', request: {} }),
+    });
+    assert.equal(response.status, 429);
+    assert.equal(upstream.calls.length, 2, 'one bounded alternate (rateLimitFailovers), then pass-through');
+    for (const account of manager.accounts) {
+      assert.equal(account.quota.agyGroups, undefined);
+      assert.equal(manager._isAvailable(account, 'gemini-3.6-flash-low'), true);
+    }
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
+  }
+});
+
+test('a pool dead end tells agy when the soonest account frees up', async () => {
+  const upstream = await agyUpstream((call, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+  });
+  const { manager, proxy, url } = await agyProxy([agyAccount('a'), agyAccount('b')], upstream.url);
+  try {
+    const [a, b] = manager.accounts;
+    manager.blockAgyGroup(a, '3p', 120_000);
+    manager.blockAgyGroup(b, '3p', 40_000);
+    const response = await fetch(`${url}/v1internal:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: inferenceBody('gpt-oss-120b-medium'),
+    });
+    assert.equal(response.status, 429);
+    const retryAfter = Number(response.headers.get('retry-after'));
+    assert.ok(retryAfter >= 39 && retryAfter <= 40, `retry-after ${retryAfter}`);
+    const body = await response.json();
+    assert.equal(body.error.details[0].retryDelay, `${retryAfter}s`);
+    assert.equal(upstream.calls.length, 0, 'nothing was dispatched');
+  } finally {
+    await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
+  }
+});
+
+test('an exhaustion refresh waits behind an in-flight routine refresh instead of being dropped', async () => {
+  let releaseHeld;
+  const held = new Promise(resolve => { releaseHeld = resolve; });
+  const state = { holdNextSummary: false, aExhausted: false, aInference: 0 };
+  const route = async (call, res) => {
+    if (call.url === '/v1internal:retrieveUserQuotaSummary') {
+      if (state.holdNextSummary && call.headers.authorization === 'Bearer tok-a') {
+        state.holdNextSummary = false;
+        await held; // the routine refresh is still in flight while the 429 lands
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(quotaSummary({
+        geminiRemaining: call.headers.authorization === 'Bearer tok-a' && state.aExhausted ? null : 1,
+      })));
+      return;
+    }
+    if (call.headers.authorization === 'Bearer tok-a' && ++state.aInference === 2) {
+      state.aExhausted = true;
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(exhausted429());
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"response":{}}');
+  };
+  route.ownsSummary = true;
+  const upstream = await agyUpstream(route);
+  const { manager, proxy, url } = await agyProxy([agyAccount('a'), agyAccount('b')], upstream.url, {
+    agyQuotaRefresh: true,
+    warmupIntervalMs: 0,
+    agyUsageActiveMs: 1,
+  });
+  const generate = () => fetch(`${url}/v1internal:generateContent`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: inferenceBody('gemini-3.6-flash-low'),
+  }).then(response => response.status);
+  try {
+    const [a] = manager.accounts;
+    await waitFor(() => manager.accounts.every(account => account.quota.agyQuotaAt));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    state.holdNextSummary = true;
+    assert.equal(await generate(), 200); // served by a → routine refresh of a starts and is held
+    await waitFor(() => a._usageRefreshing === true);
+    assert.equal(await generate(), 200); // a → 429 (exhausted) → b serves
+    assert.ok(a.quota.agyGroups.gemini.blockedUntil <= Date.now() + 20_000, 'RetryInfo fallback while queued');
+    releaseHeld();
+    await waitFor(() => a.quota.agyGroups.gemini.blockedUntil > Date.now() + 2 * HOUR);
+  } finally {
+    releaseHeld();
+    await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
+  }
+});
+
+test('every account failing authentication answers agy in the Google RPC shape', async () => {
+  const upstream = await agyUpstream((call, res) => {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end('{"error":{"code":401,"status":"UNAUTHENTICATED"}}');
+  });
+  // No OAuth client configured: the forced refresh fails non-terminally.
+  const { proxy, url } = await agyProxy([agyAccount('a')], upstream.url);
+  try {
+    const response = await fetch(`${url}/v1internal:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: inferenceBody('gemini-3.6-flash-low'),
+    });
+    assert.equal(response.status, 401);
+    const body = await response.json();
+    assert.equal(body.error.code, 401);
+    assert.equal(body.error.status, 'UNAUTHENTICATED');
+    assert.equal(typeof body.error.message, 'string');
   } finally {
     await Promise.all([closeServer(proxy), closeServer(upstream.server)]);
   }

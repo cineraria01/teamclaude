@@ -404,9 +404,24 @@ check, use `teamclaude codex status`.
 The Antigravity pool (TeamAgy) uses its own config (`~/.config/teamagy.json`)
 and port (`3458`), so it runs next to the Claude and Codex proxies. It pools
 Google AI Pro/Ultra accounts for the Antigravity CLI (`agy`) and rotates them on
-quota, the way the Codex pool rotates ChatGPT accounts. Every subcommand works
-with the `agy` prefix (`teamcodex agy <command>` works the same; a `teamagy`
-shell wrapper only needs to set `TEAMCLAUDE_PROVIDER=agy`).
+quota, the way the Codex pool rotates ChatGPT accounts.
+
+Every command takes the `agy` prefix (`node src/index.js agy <command>`).
+Install a `teamagy` wrapper that pins both the mode and the agy config, and use
+it for everything below:
+
+```sh
+#!/bin/sh
+# ~/.local/bin/teamagy
+[ "$1" = agy ] && shift
+exec env TEAMCLAUDE_PROVIDER=agy TEAMCLAUDE_CONFIG="$HOME/.config/teamagy.json" \
+  node /path/to/teamclaude/src/index.js agy "$@"
+```
+
+Do not run `teamclaude agy …` (or `teamcodex agy …`) through a wrapper that
+pins `TEAMCLAUDE_CONFIG` to the Claude or Codex config: an agy pool and a
+Claude/Codex pool never share a config file, so the proxy refuses that
+combination (and the reverse) before writing anything.
 
 **Sign in to `agy` once first.** agy stays the client and keeps its own login,
 settings and MCP servers; the proxy replaces agy's credentials with the pool
@@ -414,19 +429,19 @@ account's on every call. agy without a local login asks you to sign in.
 
 ```bash
 # 1. The account agy is signed in with (macOS keychain)
-teamclaude agy import --name pro-1
+teamagy import --name pro-1
 #    elsewhere, export the same login JSON and import the file
-teamclaude agy import --file ./agy-login.json --name pro-1
+teamagy import --file ./agy-login.json --name pro-1
 
 # 2. More accounts: a Google sign-in in the browser (agy's own login is untouched)
-teamclaude agy login --name pro-2
+teamagy login --name pro-2
 
 # 3. Run agy through the pool (starts the proxy when it is not running)
-teamclaude agy run
-teamclaude agy run -- -p "summarize this repository"
+teamagy run
+teamagy run -- -p "summarize this repository"
 
 # Or point an agy you start yourself at the proxy
-eval "$(teamclaude agy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
+eval "$(teamagy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
 ```
 
 Import and login read the account's tier (`g1-pro-tier`, …) and project with
@@ -438,7 +453,7 @@ and cached in the config; set `agyOAuthClientId` / `agyOAuthClientSecret` there
 if the binary cannot be found.
 
 Quota comes from each account's quota summary, polled at startup, every 10
-minutes, and after use. Gemini models and Claude/GPT models have separate 5-hour
+minutes, and after use (disabled or parked accounts are not polled). Gemini models and Claude/GPT models have separate 5-hour
 and weekly limits, so an account whose Gemini quota is spent still serves Claude
 and GPT models. `status` shows the Gemini group on the usual Session/Weekly line
 and the Claude/GPT group below it (the dashboard's third bar). Because agy keeps
@@ -447,12 +462,12 @@ account cannot serve the model; when no account can, agy receives Google's own
 429 and shows its usual message.
 
 ```bash
-teamclaude agy status
-teamclaude agy accounts
-teamclaude agy reload            # re-read every account's quota summary now
-teamclaude agy disable pro-1
-teamclaude agy priority pro-2 0
-teamclaude agy restart
+teamagy status
+teamagy accounts
+teamagy reload            # re-read every account's quota summary now
+teamagy disable pro-1
+teamagy priority pro-2 0
+teamagy restart
 ```
 
 Not covered: a login-free agy run, Gemini CLI, API-key or Vertex modes, keychain

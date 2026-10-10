@@ -543,7 +543,7 @@ export class TUI {
       return;
     }
     if (this.config.provider === 'agy') {
-      this._addLog('Add Antigravity accounts from a terminal: teamcodex agy import / login, then R');
+      this._addLog('Add Antigravity accounts from a terminal: teamagy import / teamagy login (or node src/index.js agy import), then R');
       return;
     }
     try {
@@ -1113,7 +1113,7 @@ export class TUI {
         return this.config.provider === 'codex'
           ? ` ${bold('i')}mport Codex login  ${bold('Esc')} cancel`
           : this.config.provider === 'agy'
-            ? ` ${bold('i')} how to add (agy import / login)  ${bold('Esc')} cancel`
+            ? ` ${bold('i')} how to add (teamagy import / login)  ${bold('Esc')} cancel`
             : ` ${bold('i')}mport Claude Code  ${bold('k')} API key  ${bold('Esc')} cancel`;
       case 'input':
         return ` ${this.inputPrompt}: ${this.inputBuf}█`;

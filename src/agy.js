@@ -124,15 +124,20 @@ export function extractAgyOAuthClient(bytes) {
       clientId = buf.toString('latin1', i, end + AGY_CLIENT_ID_SUFFIX.length);
     }
   }
-  let clientSecret = null;
-  for (let i = buf.indexOf(AGY_SECRET_PREFIX); i !== -1 && !clientSecret;
-    i = buf.indexOf(AGY_SECRET_PREFIX, i + 1)) {
+  const secrets = new Set();
+  for (let i = buf.indexOf(AGY_SECRET_PREFIX); i !== -1; i = buf.indexOf(AGY_SECRET_PREFIX, i + 1)) {
     const start = i + AGY_SECRET_PREFIX.length;
     let end = start;
     while (end < buf.length && isSecretByte(buf[end])) end++;
-    if (end - start === AGY_SECRET_BODY_LENGTH) clientSecret = buf.toString('latin1', i, end);
+    if (end - start === AGY_SECRET_BODY_LENGTH) secrets.add(buf.toString('latin1', i, end));
   }
-  return { clientId, clientSecret };
+  // agy 1.3.3 embeds exactly one. Several distinct candidates means a guess
+  // could pick another app's client: report it instead (see resolveAgyOAuthClient).
+  return {
+    clientId,
+    clientSecret: secrets.size === 1 ? [...secrets][0] : null,
+    secretCandidates: secrets.size,
+  };
 }
 
 const nonEmpty = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
@@ -153,7 +158,7 @@ export function resolveAgyOAuthClient({
   if (configuredId && configuredSecret) {
     return { clientId: configuredId, clientSecret: configuredSecret, source: 'config' };
   }
-  let scanned = { clientId: null, clientSecret: null };
+  let scanned = { clientId: null, clientSecret: null, secretCandidates: 0 };
   if (binaryPath) {
     try {
       scanned = extractAgyOAuthClient(readBinary(binaryPath));
@@ -163,6 +168,10 @@ export function resolveAgyOAuthClient({
   }
   const clientId = configuredId || nonEmpty(clientIdHint) || scanned.clientId;
   const clientSecret = configuredSecret || scanned.clientSecret;
+  if (!configuredSecret && scanned.secretCandidates > 1) {
+    throw new Error(`Found ${scanned.secretCandidates} candidate OAuth client secrets in ${binaryPath}; not guessing — `
+      + 'set agyOAuthClientId and agyOAuthClientSecret in the TeamAgy config.');
+  }
   if (!clientId || !clientSecret) {
     throw new Error(`Could not find the agy OAuth client${binaryPath ? ` in ${binaryPath}` : ' (agy binary not found)'}; `
       + 'set agyOAuthClientId and agyOAuthClientSecret in the TeamAgy config.');
@@ -327,6 +336,22 @@ export function agyModelGroup(model) {
 
 export function isAgyInferencePath(url) {
   return /^\/v1internal:(?:streamGenerateContent|generateContent)(?:\?|$)/.test(String(url || ''));
+}
+
+/**
+ * Token usage of one agy response object, counted once: only the frame whose
+ * candidate carries `finishReason` (the final one) — `usageMetadata` may ride
+ * on earlier frames too. `totalTokenCount` is the total; prompt tokens are the
+ * input share. Null when the frame is not final or has no usage.
+ */
+export function agyUsageFromResponse(response) {
+  const usage = response?.usageMetadata;
+  if (!usage || typeof usage !== 'object') return null;
+  if (!Array.isArray(response.candidates) || !response.candidates.some(c => c?.finishReason)) return null;
+  const total = Number(usage.totalTokenCount);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const input = Math.min(total, Math.max(0, Number(usage.promptTokenCount) || 0));
+  return { input, output: total - input };
 }
 
 function bucketGroup(bucket, group) {

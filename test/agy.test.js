@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   agyAffinityKey,
   agyModelGroup,
+  agyUsageFromResponse,
   buildAgyAuthUrl,
   buildAgyRunEnv,
   classifyAgy429,
@@ -94,8 +95,36 @@ test('OAuth client is scanned from agy binary bytes: prefixed id and a 28-char s
     Buffer.from([0xff, 0xfe]),
   ]);
 
-  assert.deepEqual(extractAgyOAuthClient(binary), { clientId: FAKE_CLIENT_ID, clientSecret: FAKE_SECRET });
-  assert.deepEqual(extractAgyOAuthClient(Buffer.from('nothing here')), { clientId: null, clientSecret: null });
+  assert.deepEqual(extractAgyOAuthClient(binary), { clientId: FAKE_CLIENT_ID, clientSecret: FAKE_SECRET, secretCandidates: 1 });
+  assert.deepEqual(extractAgyOAuthClient(Buffer.concat([binary, Buffer.from(FAKE_SECRET)])).clientSecret, FAKE_SECRET,
+    'the same secret twice is still one candidate');
+  assert.deepEqual(extractAgyOAuthClient(Buffer.from('nothing here')), { clientId: null, clientSecret: null, secretCandidates: 0 });
+});
+
+test('several distinct secret candidates are an error, never a guess', () => {
+  const other = ['GOCSPX', 'g'.repeat(28)].join('-');
+  const binary = Buffer.from(`${FAKE_CLIENT_ID}\0${FAKE_SECRET}\0${other}\0`);
+  assert.deepEqual(extractAgyOAuthClient(binary), { clientId: FAKE_CLIENT_ID, clientSecret: null, secretCandidates: 2 });
+  assert.throws(
+    () => resolveAgyOAuthClient({ config: {}, binaryPath: '/fake/agy', readBinary: () => binary }),
+    /2 candidate OAuth client secrets.*agyOAuthClientSecret/,
+  );
+  // A configured secret settles it without reading the ambiguity.
+  assert.equal(resolveAgyOAuthClient({
+    config: { agyOAuthClientSecret: 'configured-secret' },
+    binaryPath: '/fake/agy',
+    readBinary: () => binary,
+  }).clientSecret, 'configured-secret');
+});
+
+test('token usage is counted once, from the final frame', () => {
+  const usageMetadata = { promptTokenCount: 30, candidatesTokenCount: 8, totalTokenCount: 45 };
+  assert.equal(agyUsageFromResponse({ candidates: [{ content: {} }], usageMetadata }), null);
+  assert.deepEqual(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }], usageMetadata }), { input: 30, output: 15 });
+  assert.deepEqual(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }], usageMetadata: { totalTokenCount: 7 } }),
+    { input: 0, output: 7 });
+  assert.equal(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }] }), null);
+  assert.equal(agyUsageFromResponse(undefined), null);
 });
 
 test('config override wins over the binary; otherwise id_token aud + binary secret', () => {
