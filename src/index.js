@@ -1439,7 +1439,20 @@ async function proxyWorkerCommand() {
     ? config.overflowQueueMaxDepth
     : 256;
   const accountManager = new AccountManager(accounts, threshold, reevalIntervalMs, maxConcurrentDefault, overflowQueueMaxDepth);
-  if (agyMode) accountManager.agyOAuth = await agyOAuthForServer(config);
+  if (agyMode) {
+    accountManager.agyOAuth = await agyOAuthForServer(config);
+    // invalid_client on a refresh: drop the cached client and resolve it again
+    // (a hand-edited secret on disk wins over a fresh binary probe).
+    accountManager.agyOAuthRecover = async rejectedSecret => {
+      const disk = await loadConfig().catch(() => null);
+      if (disk?.provider === 'agy') {
+        config.agyOAuthClientId = disk.agyOAuthClientId;
+        config.agyOAuthClientSecret = disk.agyOAuthClientSecret;
+      }
+      const { clientId, clientSecret } = await ensureAgyOAuthClient(config, null, { rejectedSecret });
+      return { clientId, clientSecret, tokenUrl: config.agyTokenUrl || undefined };
+    };
+  }
 
   // Restore the last run's quota snapshot so a restart doesn't blank the
   // dashboard (quota otherwise lives only in memory and is re-learned from
@@ -3753,11 +3766,19 @@ function agyUpstreamOf(config) {
 }
 
 /**
- * The agy OAuth client (refresh / login): config override, else scanned from
- * the agy binary once and cached in the 0600 config — never in the repository.
+ * The agy OAuth client (refresh / login): config override, else the binary's
+ * candidates verified against the token endpoint, cached in the 0600 config —
+ * never in the repository. `rejectedSecret` (just refused with invalid_client)
+ * is never reused.
  */
-async function ensureAgyOAuthClient(config, clientIdHint = null) {
-  const client = resolveAgyOAuthClient({ config, clientIdHint, binaryPath: locateAgyBinary() });
+async function ensureAgyOAuthClient(config, clientIdHint = null, { rejectedSecret = null } = {}) {
+  const client = await resolveAgyOAuthClient({
+    config,
+    clientIdHint,
+    binaryPath: locateAgyBinary(),
+    tokenUrl: config.agyTokenUrl || undefined,
+    rejectedSecret,
+  });
   if (client.source !== 'config') {
     await atomicConfigUpdate(cfg => {
       assertAgyConfig(cfg);
@@ -3869,12 +3890,21 @@ async function upsertAgyAccount(config, explicitName, creds, source) {
   }
   // A keychain copy may hold an expired access token; loadCodeAssist needs a live one.
   if (client && isTokenExpiringSoon(creds.expiresAt)) {
+    const refresh = c => refreshAgyAccessToken(creds.refreshToken, {
+      clientId: c.clientId,
+      clientSecret: c.clientSecret,
+      tokenUrl: config.agyTokenUrl || undefined,
+    });
     try {
-      const fresh = await refreshAgyAccessToken(creds.refreshToken, {
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-        tokenUrl: config.agyTokenUrl || undefined,
-      });
+      let fresh;
+      try {
+        fresh = await refresh(client);
+      } catch (err) {
+        if (err?.invalidClient !== true) throw err;
+        // A cached client the token endpoint refuses: resolve it again once.
+        client = await ensureAgyOAuthClient(config, creds.clientId, { rejectedSecret: client.clientSecret });
+        fresh = await refresh(client);
+      }
       creds = { ...creds, accessToken: fresh.accessToken, refreshToken: fresh.refreshToken, expiresAt: fresh.expiresAt };
     } catch (err) {
       console.error(`Warning: token refresh failed: ${err.message}`);

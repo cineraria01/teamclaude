@@ -412,8 +412,12 @@ eval "$(teamagy env)"   # export CLOUD_CODE_URL=http://127.0.0.1:3458
 프로젝트를 저장하고, 유료 등급이 없으면 경고합니다. 같은 Google 계정을 다시
 가져오면 그 계정을 그대로 갱신합니다. 계정을 지워도 Google 권한은 철회하지
 않습니다(로컬 agy 로그인과 같은 계정일 수 있음). 토큰 갱신에 쓰는 OAuth
-클라이언트는 설치된 `agy` 바이너리에서 읽어 설정에 저장합니다. 바이너리를 못
-찾으면 설정에 `agyOAuthClientId`·`agyOAuthClientSecret`을 넣으세요.
+클라이언트는 설치된 `agy` 바이너리에서 읽어 설정에 저장합니다. 바이너리에는 후보
+비밀값이 여럿 있어서, 가짜 refresh 토큰으로 Google 토큰 엔드포인트에 하나씩
+확인합니다. 맞는 클라이언트는 `invalid_grant`, 틀린 것은 `invalid_client`로
+답합니다(토큰은 발급되지 않음). 나중에 저장된 클라이언트가 거부되면 같은 방법으로
+다시 확인하고, 계정 탓으로 돌리지 않습니다. 후보 중 정확히 하나가 통과하지 않으면
+설정에 `agyOAuthClientId`·`agyOAuthClientSecret`을 직접 넣으세요.
 
 쿼터는 계정별 쿼터 요약을 시작할 때, 10분마다, 사용 후에 읽어 옵니다(꺼 둔 계정과 격리된 계정은 읽지 않음). Gemini
 모델과 Claude/GPT 모델은 5시간·주간 한도가 따로라서, Gemini 쿼터를 다 쓴 계정도

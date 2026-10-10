@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +24,42 @@ import {
 // Obviously fake OAuth client values, assembled at runtime so no literal in
 // this public repository resembles a real Google client id or secret.
 const FAKE_CLIENT_ID = `${['1071006060591', 'fakeclient'].join('-')}.apps.googleusercontent.com`;
-const FAKE_SECRET = ['GOCSPX', 'f'.repeat(28)].join('-');
+// agy 1.3.3's layout, faked: the right secret is the head of a longer run
+// (Go strings have no separator), a free-standing one belongs to another client.
+const RIGHT_SECRET = ['GOCSPX', 'R'.repeat(28)].join('-');
+const DECOY_SECRET = ['GOCSPX', 'D'.repeat(28)].join('-');
+const GLUED_TAIL = 'NextGoStringGluedOn_'.padEnd(35, 'z');
+const FAKE_BINARY = Buffer.concat([
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2]),
+  Buffer.from(`${['GOCSPX', 'tooShort'].join('-')}\0runtime.go\0${FAKE_CLIENT_ID}`),
+  Buffer.from(`${RIGHT_SECRET}${GLUED_TAIL}\0other\0${DECOY_SECRET}\0`),
+  Buffer.from([0xff, 0xfe]),
+]);
+
+/** Fake Google token endpoint: `accepts(id, secret)` decides valid vs invalid_client. */
+async function tokenEndpoint(accepts, { status } = {}) {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+    requests.push(form);
+    if (status) {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end('{"error":"backend_error"}');
+      return;
+    }
+    const ok = accepts(form.client_id, form.client_secret);
+    res.writeHead(ok ? 400 : 401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: ok ? 'invalid_grant' : 'invalid_client' }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return {
+    requests,
+    url: `http://127.0.0.1:${server.address().port}/token`,
+    close: () => new Promise(resolve => server.close(resolve)),
+  };
+}
 
 function jwt(payload) {
   return `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
@@ -84,37 +120,94 @@ echo "go-keyring-base64:Zm9v"
   }
 });
 
-test('OAuth client is scanned from agy binary bytes: prefixed id and a 28-char secret', () => {
-  const tooShort = ['GOCSPX', 'short'].join('-');
-  const tooLong = ['GOCSPX', 'x'.repeat(29)].join('-');
-  const binary = Buffer.concat([
-    Buffer.from([0, 1, 2]),
-    Buffer.from(`${tooShort}\0${tooLong}\0`),
-    Buffer.from(`21071006060591-wrongnumber.apps.googleusercontent.com\0`),
-    Buffer.from(`${FAKE_CLIENT_ID}\0${FAKE_SECRET}\0`),
-    Buffer.from([0xff, 0xfe]),
-  ]);
-
-  assert.deepEqual(extractAgyOAuthClient(binary), { clientId: FAKE_CLIENT_ID, clientSecret: FAKE_SECRET, secretCandidates: 1 });
-  assert.deepEqual(extractAgyOAuthClient(Buffer.concat([binary, Buffer.from(FAKE_SECRET)])).clientSecret, FAKE_SECRET,
-    'the same secret twice is still one candidate');
-  assert.deepEqual(extractAgyOAuthClient(Buffer.from('nothing here')), { clientId: null, clientSecret: null, secretCandidates: 0 });
+test('every 28-char secret candidate is collected, including the head of a glued run', () => {
+  assert.deepEqual(extractAgyOAuthClient(FAKE_BINARY), {
+    clientIds: [FAKE_CLIENT_ID],
+    clientSecrets: [RIGHT_SECRET, DECOY_SECRET],
+  });
+  assert.deepEqual(extractAgyOAuthClient(Buffer.concat([FAKE_BINARY, Buffer.from(DECOY_SECRET)])).clientSecrets,
+    [RIGHT_SECRET, DECOY_SECRET], 'duplicates collapse');
+  assert.deepEqual(extractAgyOAuthClient(Buffer.from('nothing here')), { clientIds: [], clientSecrets: [] });
 });
 
-test('several distinct secret candidates are an error, never a guess', () => {
-  const other = ['GOCSPX', 'g'.repeat(28)].join('-');
-  const binary = Buffer.from(`${FAKE_CLIENT_ID}\0${FAKE_SECRET}\0${other}\0`);
-  assert.deepEqual(extractAgyOAuthClient(binary), { clientId: FAKE_CLIENT_ID, clientSecret: null, secretCandidates: 2 });
-  assert.throws(
-    () => resolveAgyOAuthClient({ config: {}, binaryPath: '/fake/agy', readBinary: () => binary }),
-    /2 candidate OAuth client secrets.*agyOAuthClientSecret/,
-  );
-  // A configured secret settles it without reading the ambiguity.
-  assert.equal(resolveAgyOAuthClient({
-    config: { agyOAuthClientSecret: 'configured-secret' },
+test('the token endpoint picks the client pair: invalid_grant = right, invalid_client = wrong', async () => {
+  const endpoint = await tokenEndpoint((id, secret) => id === FAKE_CLIENT_ID && secret === RIGHT_SECRET);
+  try {
+    const picked = await resolveAgyOAuthClient({
+      config: {},
+      binaryPath: '/fake/agy',
+      readBinary: () => FAKE_BINARY,
+      tokenUrl: endpoint.url,
+    });
+    assert.deepEqual(picked, { clientId: FAKE_CLIENT_ID, clientSecret: RIGHT_SECRET, source: 'probe' });
+    assert.deepEqual(endpoint.requests.map(form => [form.grant_type, form.refresh_token, form.client_secret]), [
+      ['refresh_token', 'teamagy-oauth-client-probe', RIGHT_SECRET],
+      ['refresh_token', 'teamagy-oauth-client-probe', DECOY_SECRET],
+    ]);
+
+    // The id_token aud is the id; a single candidate is still verified.
+    endpoint.requests.length = 0;
+    const single = await resolveAgyOAuthClient({
+      config: {},
+      clientIdHint: FAKE_CLIENT_ID,
+      binaryPath: '/fake/agy',
+      readBinary: () => Buffer.from(`${RIGHT_SECRET}\0`),
+      tokenUrl: endpoint.url,
+    });
+    assert.equal(single.clientSecret, RIGHT_SECRET);
+    assert.equal(endpoint.requests.length, 1);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('no accepted pair, several, or no clear answer is an error — never a guess', async () => {
+  const resolveWith = endpoint => resolveAgyOAuthClient({
+    config: {},
     binaryPath: '/fake/agy',
-    readBinary: () => binary,
-  }).clientSecret, 'configured-secret');
+    readBinary: () => FAKE_BINARY,
+    tokenUrl: endpoint.url,
+  });
+  for (const [endpoint, message] of [
+    [await tokenEndpoint(() => false), /None of 2 candidate OAuth client pairs.*agyOAuthClientSecret/],
+    [await tokenEndpoint(() => true), /2 of 2 candidate OAuth client pairs.*not guessing/],
+    [await tokenEndpoint(() => true, { status: 503 }), /no clear answer.*agyOAuthClientSecret/],
+  ]) {
+    try {
+      await assert.rejects(resolveWith(endpoint), message);
+    } finally {
+      await endpoint.close();
+    }
+  }
+});
+
+test('a configured client wins without probing; a refused configured secret is re-probed without it', async () => {
+  const endpoint = await tokenEndpoint((id, secret) => secret === RIGHT_SECRET);
+  let reads = 0;
+  const readBinary = () => { reads += 1; return FAKE_BINARY; };
+  try {
+    const configured = await resolveAgyOAuthClient({
+      config: { agyOAuthClientId: FAKE_CLIENT_ID, agyOAuthClientSecret: DECOY_SECRET },
+      binaryPath: '/fake/agy',
+      readBinary,
+      tokenUrl: endpoint.url,
+    });
+    assert.deepEqual(configured, { clientId: FAKE_CLIENT_ID, clientSecret: DECOY_SECRET, source: 'config' });
+    assert.equal(reads, 0);
+    assert.equal(endpoint.requests.length, 0);
+
+    const recovered = await resolveAgyOAuthClient({
+      config: { agyOAuthClientId: FAKE_CLIENT_ID, agyOAuthClientSecret: DECOY_SECRET },
+      binaryPath: '/fake/agy',
+      readBinary,
+      tokenUrl: endpoint.url,
+      rejectedSecret: DECOY_SECRET,
+    });
+    assert.deepEqual(recovered, { clientId: FAKE_CLIENT_ID, clientSecret: RIGHT_SECRET, source: 'probe' });
+    assert.deepEqual(endpoint.requests.map(form => form.client_secret), [RIGHT_SECRET], 'the refused secret is not probed again');
+  } finally {
+    await endpoint.close();
+  }
 });
 
 test('token usage is counted once, from the final frame', () => {
@@ -125,30 +218,6 @@ test('token usage is counted once, from the final frame', () => {
     { input: 0, output: 7 });
   assert.equal(agyUsageFromResponse({ candidates: [{ finishReason: 'STOP' }] }), null);
   assert.equal(agyUsageFromResponse(undefined), null);
-});
-
-test('config override wins over the binary; otherwise id_token aud + binary secret', () => {
-  let reads = 0;
-  const readBinary = () => {
-    reads += 1;
-    return Buffer.from(`${FAKE_CLIENT_ID} ${FAKE_SECRET}`);
-  };
-
-  const configured = resolveAgyOAuthClient({
-    config: { agyOAuthClientId: 'configured-id', agyOAuthClientSecret: 'configured-secret' },
-    binaryPath: '/fake/agy',
-    readBinary,
-  });
-  assert.deepEqual(configured, { clientId: 'configured-id', clientSecret: 'configured-secret', source: 'config' });
-  assert.equal(reads, 0, 'a configured client never touches the binary');
-
-  const scanned = resolveAgyOAuthClient({ config: {}, clientIdHint: 'aud-from-id-token', binaryPath: '/fake/agy', readBinary });
-  assert.deepEqual(scanned, { clientId: 'aud-from-id-token', clientSecret: FAKE_SECRET, source: 'binary' });
-
-  assert.throws(
-    () => resolveAgyOAuthClient({ config: {}, binaryPath: '/fake/agy', readBinary: () => Buffer.from('none') }),
-    /agyOAuthClientSecret/,
-  );
 });
 
 test('model groups: gemini-* and unknown → gemini, claude-*/gpt-* → 3p, no model → none', () => {

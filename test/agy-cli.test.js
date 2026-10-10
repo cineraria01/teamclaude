@@ -16,7 +16,10 @@ import {
 const entry = fileURLToPath(new URL('../src/index.js', import.meta.url));
 // Obviously fake OAuth client values, assembled at runtime (public repository).
 const FAKE_CLIENT_ID = `${['1071006060591', 'fakeclient'].join('-')}.apps.googleusercontent.com`;
-const FAKE_SECRET = ['GOCSPX', 'f'.repeat(28)].join('-');
+// agy 1.3.3's layout, faked: the right secret heads a longer run of glued Go
+// strings; the free-standing one belongs to another client.
+const FAKE_SECRET = ['GOCSPX', 'R'.repeat(28)].join('-');
+const DECOY_SECRET = ['GOCSPX', 'D'.repeat(28)].join('-');
 
 function jwt(payload) {
   return `header.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
@@ -114,9 +117,20 @@ test('the agy prefix selects teamagy.json and refuses Claude/Codex-only commands
 test('agy import (file, then keychain) updates one account in place, caches the OAuth client, and stores tier and project', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'teamagy-import-'));
   const loadCalls = [];
+  const probes = [];
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
+    if (req.url === '/token') {
+      // Fake Google token endpoint: a bogus refresh token tells the right
+      // client (invalid_grant) from a wrong one (invalid_client).
+      const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+      probes.push(form);
+      const right = form.client_id === FAKE_CLIENT_ID && form.client_secret === FAKE_SECRET;
+      res.writeHead(right ? 400 : 401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: right ? 'invalid_grant' : 'invalid_client' }));
+      return;
+    }
     loadCalls.push({ url: req.url, authorization: req.headers.authorization, body: Buffer.concat(chunks).toString() });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
@@ -136,12 +150,14 @@ test('agy import (file, then keychain) updates one account in place, caches the 
       provider: 'agy',
       proxy: { port: await freePort(), apiKey: 'proxy-key' },
       agyUpstream: `http://127.0.0.1:${upstreamPort}`,
+      agyTokenUrl: `http://127.0.0.1:${upstreamPort}/token`,
       accounts: [],
     }));
-    // A fake agy binary: junk bytes around the embedded client values.
+    // A fake agy binary laid out like 1.3.3: the right secret glued to the
+    // next string, a free-standing decoy secret after it.
     await writeFile(fakeAgy, Buffer.concat([
       Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0]),
-      Buffer.from(`...${FAKE_CLIENT_ID}\0...${FAKE_SECRET}\0...`),
+      Buffer.from(`...${FAKE_CLIENT_ID}\0...${FAKE_SECRET}${'NextGoStringGluedOn_'.padEnd(35, 'z')}\0..${DECOY_SECRET}\0`),
     ]));
     await writeFile(loginFile, JSON.stringify(login('ya29.first-access')));
     await writeFile(fakeSecurity, `#!/bin/sh
@@ -176,7 +192,9 @@ echo "go-keyring-base64:${Buffer.from(JSON.stringify(second)).toString('base64')
     assert.equal(account.tierId, 'g1-pro-tier');
     assert.equal(account.projectId, 'aicode-consumers');
     assert.equal(config.agyOAuthClientId, FAKE_CLIENT_ID);
-    assert.equal(config.agyOAuthClientSecret, FAKE_SECRET);
+    assert.equal(config.agyOAuthClientSecret, FAKE_SECRET, 'the probe-verified secret, not the free-standing decoy');
+    assert.deepEqual(probes.map(form => form.client_secret), [FAKE_SECRET, DECOY_SECRET],
+      'probed once (first import); the second import reuses the cache');
 
     assert.deepEqual(loadCalls.map(call => [call.url, call.authorization, JSON.parse(call.body)]), [
       ['/v1internal:loadCodeAssist', 'Bearer ya29.first-access', { metadata: { ideType: 'ANTIGRAVITY' } }],
@@ -387,6 +405,85 @@ test('a provider-less Claude config is never touched in agy mode (prefix or env)
     assert.equal(config.provider, 'agy');
     assert.equal(config.proxy.port, 3458);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a running server whose cached secret is refused re-resolves it from the binary, caches it, and keeps the account', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamagy-client-recovery-'));
+  const tokenForms = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (req.url === '/token') {
+      const form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+      tokenForms.push(form);
+      const right = form.client_id === FAKE_CLIENT_ID && form.client_secret === FAKE_SECRET;
+      if (!right) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end('{"error":"invalid_client"}');
+      } else if (form.refresh_token === 'teamagy-oauth-client-probe') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"error":"invalid_grant"}');
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'ya29.refreshed', expires_in: 3599 }));
+      }
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"groups":[]}');
+  });
+  const upstreamPort = await listen(upstream);
+  const configPath = join(dir, 'teamagy.json');
+  const fakeAgy = join(dir, 'agy-binary');
+  const port = await freePort();
+  let server;
+  try {
+    await writeFile(fakeAgy, Buffer.from(
+      `..${FAKE_CLIENT_ID}\0${FAKE_SECRET}${'NextGoStringGluedOn_'.padEnd(35, 'z')}\0..${DECOY_SECRET}\0`));
+    await writeFile(configPath, JSON.stringify({
+      provider: 'agy',
+      proxy: { port, apiKey: 'proxy-key' },
+      agyUpstream: `http://127.0.0.1:${upstreamPort}`,
+      agyTokenUrl: `http://127.0.0.1:${upstreamPort}/token`,
+      // The incident: the free-standing decoy was cached as the secret.
+      agyOAuthClientId: FAKE_CLIENT_ID,
+      agyOAuthClientSecret: DECOY_SECRET,
+      accounts: [{
+        name: 'main', provider: 'agy', type: 'oauth', accountUuid: 'sub-main',
+        accessToken: 'ya29.expired', refreshToken: '1//main-refresh', expiresAt: Date.now() - 60_000,
+      }],
+    }));
+    server = spawn(process.execPath, [entry, 'agy', 'server'], {
+      env: isolatedEnv(dir, { TEAMCLAUDE_CONFIG: configPath, TEAMAGY_AGY_BIN: fakeAgy }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    server.stdout.on('data', chunk => { output += chunk; });
+    server.stderr.on('data', chunk => { output += chunk; });
+
+    const deadline = Date.now() + 15_000;
+    let config;
+    while (Date.now() < deadline) {
+      config = JSON.parse(await readFile(configPath, 'utf8'));
+      if (config.accounts[0].accessToken === 'ya29.refreshed') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(config.accounts[0].accessToken, 'ya29.refreshed', output);
+    assert.equal(config.agyOAuthClientSecret, FAKE_SECRET, 'the re-resolved secret is cached');
+    assert.match(output, /refused the cached OAuth client \(invalid_client\)/);
+
+    const status = await (await fetch(`http://127.0.0.1:${port}/teamclaude/status`)).json();
+    assert.equal(status.accounts[0].status, 'active', 'the account was never parked for the client\'s fault');
+    assert.equal(tokenForms.some(form => form.refresh_token === '1//main-refresh' && form.client_secret === FAKE_SECRET), true);
+  } finally {
+    if (server && server.exitCode == null) {
+      const exited = new Promise(resolve => server.once('exit', resolve));
+      server.kill('SIGTERM');
+      await exited;
+    }
+    await new Promise(resolve => upstream.close(resolve));
     await rm(dir, { recursive: true, force: true });
   }
 });

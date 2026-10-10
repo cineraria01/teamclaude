@@ -1558,7 +1558,7 @@ export class AccountManager {
         const newTokens = account.provider === 'codex'
           ? await refreshCodexAccessToken(account.refreshToken)
           : account.provider === 'agy'
-            ? await refreshAgyAccessToken(account.refreshToken, this.agyOAuth || {})
+            ? await this._refreshAgy(account.refreshToken)
             : await refreshAccessToken(account.refreshToken);
         // Another live sync may have installed a newer rotated token while this
         // network request was in flight. Never let the late result from the old
@@ -1604,8 +1604,13 @@ export class AccountManager {
         // an account already parked by the request path as refresh-caused.
         const accessTokenExpired = !account.expiresAt
           || Date.now() >= normalizeExpiresAt(account.expiresAt);
+        // agy: only invalid_grant is the account's fault. A refused OAuth
+        // client (invalid_client even after re-resolving it) parks the account
+        // only once its token has lapsed, and as `refresh-failed` — the
+        // refresh-caused error a later successful refresh heals.
         const terminalAuthentication = account.provider === 'codex' || account.provider === 'agy'
           ? err?.terminalAuthentication === true
+            || (account.provider === 'agy' && err?.clientRejected === true && accessTokenExpired)
           : accessTokenExpired;
         if (terminalAuthentication) {
           const cancellation = normalizeSubscriptionCancellation(account.subscriptionCancellation);
@@ -1624,6 +1629,58 @@ export class AccountManager {
     })();
 
     return account._refreshPromise;
+  }
+
+  /**
+   * agy refresh with client recovery. `agyOAuth` is the cached client; when
+   * the token endpoint answers `invalid_client` the CLIENT is wrong (a bad
+   * binary-scan pick, a rotated secret), not the account: drop it, re-resolve
+   * once via `agyOAuthRecover(rejectedSecret)` (coalesced across accounts,
+   * 5-minute pause after a failed attempt), and retry. A still-refused client
+   * fails just this refresh, tagged `clientRejected`.
+   */
+  async _refreshAgy(refreshToken) {
+    const client = this.agyOAuth || {};
+    try {
+      return await refreshAgyAccessToken(refreshToken, client);
+    } catch (err) {
+      if (err?.invalidClient !== true) throw err;
+      if (this.agyOAuth === client) {
+        if (typeof this.agyOAuthRecover !== 'function' || Date.now() < (this._agyRecoverPausedUntil || 0)) {
+          err.clientRejected = true;
+          throw err;
+        }
+        if (!this._agyRecoverPromise) {
+          console.error('[TeamAgy] The token endpoint refused the cached OAuth client (invalid_client) — re-resolving it');
+          this._agyRecoverPromise = Promise.resolve()
+            .then(() => this.agyOAuthRecover(client.clientSecret ?? null))
+            .then(next => {
+              if (!next?.clientId || !next?.clientSecret) throw new Error('no OAuth client was resolved');
+              this.agyOAuth = next;
+              console.log('[TeamAgy] OAuth client re-resolved');
+            })
+            .catch(recoverErr => {
+              this._agyRecoverPausedUntil = Date.now() + REFRESH_SWEEP_RETRY_MS;
+              console.error(`[TeamAgy] Could not re-resolve the OAuth client: ${recoverErr.message}`);
+            })
+            .finally(() => { this._agyRecoverPromise = null; });
+        }
+        await this._agyRecoverPromise;
+        if (this.agyOAuth === client) {
+          err.clientRejected = true;
+          throw err;
+        }
+      }
+      try {
+        return await refreshAgyAccessToken(refreshToken, this.agyOAuth || {});
+      } catch (retryErr) {
+        if (retryErr?.invalidClient === true) {
+          retryErr.clientRejected = true;
+          console.error('[TeamAgy] The re-resolved OAuth client was refused as well (invalid_client); set agyOAuthClientSecret in the TeamAgy config');
+        }
+        throw retryErr;
+      }
+    }
   }
 
   /**

@@ -30,8 +30,8 @@ export const AGY_EXHAUSTED_FALLBACK_MS = 5 * 60 * 1000;
 
 // The agy OAuth client lives in the agy binary. The repository is public with
 // push protection, so only these public prefixes are code; the full id and the
-// secret are resolved at runtime (config override → binary scan) and cached in
-// the 0600 config file.
+// secret are resolved at runtime (config override → binary scan + token
+// endpoint probe) and cached in the 0600 config file.
 const AGY_CLIENT_ID_PREFIX = '1071006060591-';
 const AGY_CLIENT_ID_SUFFIX = '.apps.googleusercontent.com';
 const AGY_SECRET_PREFIX = ['GOCSPX', ''].join('-');
@@ -107,58 +107,96 @@ const isSecretByte = b => (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a)
 const isLowerAlnum = b => (b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x7a);
 
 /**
- * Scan agy binary bytes for its OAuth client: the `1071006060591-…` id and the
- * first `GOCSPX-` followed by exactly 28 `[A-Za-z0-9_-]` bytes. Byte scanning
- * (not a regex over a decoded string) keeps a ~100 MB binary cheap.
+ * Every OAuth client candidate in agy binary bytes: each `1071006060591-…`
+ * id and each `GOCSPX-` followed by 28 `[A-Za-z0-9_-]` bytes. A Go binary
+ * stores its strings back to back with no separator, so a candidate may be
+ * the head of a longer run (agy 1.3.3: the right secret is the first 35 bytes
+ * of a 70-byte run, and a free-standing 35-byte secret belongs to another
+ * client) — the bytes cannot tell them apart; `resolveAgyOAuthClient` asks the
+ * token endpoint. Byte scanning keeps a ~100 MB binary cheap.
  */
 export function extractAgyOAuthClient(bytes) {
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
-  let clientId = null;
-  for (let i = buf.indexOf(AGY_CLIENT_ID_PREFIX); i !== -1 && !clientId;
-    i = buf.indexOf(AGY_CLIENT_ID_PREFIX, i + 1)) {
-    if (i > 0 && buf[i - 1] >= 0x30 && buf[i - 1] <= 0x39) continue; // a longer number, not this client
+  const clientIds = new Set();
+  for (let i = buf.indexOf(AGY_CLIENT_ID_PREFIX); i !== -1; i = buf.indexOf(AGY_CLIENT_ID_PREFIX, i + 1)) {
     let end = i + AGY_CLIENT_ID_PREFIX.length;
     while (end < buf.length && isLowerAlnum(buf[end])) end++;
     if (end > i + AGY_CLIENT_ID_PREFIX.length
         && buf.toString('latin1', end, end + AGY_CLIENT_ID_SUFFIX.length) === AGY_CLIENT_ID_SUFFIX) {
-      clientId = buf.toString('latin1', i, end + AGY_CLIENT_ID_SUFFIX.length);
+      clientIds.add(buf.toString('latin1', i, end + AGY_CLIENT_ID_SUFFIX.length));
     }
   }
-  const secrets = new Set();
+  const clientSecrets = new Set();
   for (let i = buf.indexOf(AGY_SECRET_PREFIX); i !== -1; i = buf.indexOf(AGY_SECRET_PREFIX, i + 1)) {
-    const start = i + AGY_SECRET_PREFIX.length;
-    let end = start;
-    while (end < buf.length && isSecretByte(buf[end])) end++;
-    if (end - start === AGY_SECRET_BODY_LENGTH) secrets.add(buf.toString('latin1', i, end));
+    const end = i + AGY_SECRET_PREFIX.length + AGY_SECRET_BODY_LENGTH;
+    if (end > buf.length) break;
+    let ok = true;
+    for (let j = i + AGY_SECRET_PREFIX.length; j < end && ok; j++) ok = isSecretByte(buf[j]);
+    if (ok) clientSecrets.add(buf.toString('latin1', i, end));
   }
-  // agy 1.3.3 embeds exactly one. Several distinct candidates means a guess
-  // could pick another app's client: report it instead (see resolveAgyOAuthClient).
-  return {
-    clientId,
-    clientSecret: secrets.size === 1 ? [...secrets][0] : null,
-    secretCandidates: secrets.size,
-  };
+  return { clientIds: [...clientIds], clientSecrets: [...clientSecrets] };
+}
+
+// A refresh token no account owns: the probe never mints anything.
+const PROBE_REFRESH_TOKEN = 'teamagy-oauth-client-probe';
+
+/**
+ * Ask the token endpoint whether (id, secret) is a real client, side-effect
+ * free: a refresh with a bogus token answers `400 invalid_grant` for a valid
+ * client and `401 invalid_client` for a wrong one (both measured 2026-10-10).
+ * Returns 'valid' | 'invalid' | 'unknown'.
+ */
+export async function probeAgyOAuthClient({ clientId, clientSecret, tokenUrl = AGY_TOKEN_URL }) {
+  try {
+    const response = await fetch(tokenUrl || AGY_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: PROBE_REFRESH_TOKEN,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }).toString(),
+      signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+    });
+    const raw = await response.text().catch(() => '');
+    let code = null;
+    try { code = JSON.parse(raw)?.error ?? null; } catch { /* non-JSON body */ }
+    if (response.status === 400 && code === 'invalid_grant') return 'valid';
+    if (code === 'invalid_client') return 'invalid';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 const nonEmpty = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
 
 /**
- * Resolve the OAuth client: config `agyOAuthClientId`/`agyOAuthClientSecret`
- * win; otherwise the id_token `aud` hint / binary scan fill what is missing.
- * `source` is 'config' when nothing new was learned (no cache write needed).
+ * Resolve the OAuth client. Config `agyOAuthClientId` + `agyOAuthClientSecret`
+ * win (unless that secret is `rejectedSecret`, the one the token endpoint just
+ * refused). Otherwise every candidate pair — configured or id_token `aud` id,
+ * else scanned ids, × configured or scanned secrets — is probed, and exactly
+ * one accepted pair is taken (`source: 'probe'`, to be cached). None, several,
+ * or an unanswered probe is an error asking for the config values: never a
+ * guess.
  */
-export function resolveAgyOAuthClient({
+export async function resolveAgyOAuthClient({
   config = {},
   clientIdHint = null,
   binaryPath = null,
   readBinary = readFileSync,
+  tokenUrl = AGY_TOKEN_URL,
+  rejectedSecret = null,
 } = {}) {
   const configuredId = nonEmpty(config?.agyOAuthClientId);
-  const configuredSecret = nonEmpty(config?.agyOAuthClientSecret);
+  let configuredSecret = nonEmpty(config?.agyOAuthClientSecret);
+  if (configuredSecret && configuredSecret === rejectedSecret) configuredSecret = null;
   if (configuredId && configuredSecret) {
     return { clientId: configuredId, clientSecret: configuredSecret, source: 'config' };
   }
-  let scanned = { clientId: null, clientSecret: null, secretCandidates: 0 };
+  const fix = 'set agyOAuthClientId and agyOAuthClientSecret in the TeamAgy config.';
+  let scanned = { clientIds: [], clientSecrets: [] };
   if (binaryPath) {
     try {
       scanned = extractAgyOAuthClient(readBinary(binaryPath));
@@ -166,17 +204,28 @@ export function resolveAgyOAuthClient({
       throw new Error(`Could not read the agy binary at ${binaryPath}: ${err.message}`);
     }
   }
-  const clientId = configuredId || nonEmpty(clientIdHint) || scanned.clientId;
-  const clientSecret = configuredSecret || scanned.clientSecret;
-  if (!configuredSecret && scanned.secretCandidates > 1) {
-    throw new Error(`Found ${scanned.secretCandidates} candidate OAuth client secrets in ${binaryPath}; not guessing — `
-      + 'set agyOAuthClientId and agyOAuthClientSecret in the TeamAgy config.');
+  const hint = nonEmpty(clientIdHint);
+  const ids = configuredId ? [configuredId] : hint ? [hint] : scanned.clientIds;
+  const secrets = (configuredSecret ? [configuredSecret] : scanned.clientSecrets)
+    .filter(secret => secret !== rejectedSecret);
+  if (!ids.length || !secrets.length) {
+    throw new Error(`Could not find the agy OAuth client${binaryPath ? ` in ${binaryPath}` : ' (agy binary not found)'}; ${fix}`);
   }
-  if (!clientId || !clientSecret) {
-    throw new Error(`Could not find the agy OAuth client${binaryPath ? ` in ${binaryPath}` : ' (agy binary not found)'}; `
-      + 'set agyOAuthClientId and agyOAuthClientSecret in the TeamAgy config.');
+  const accepted = [];
+  for (const clientId of ids) {
+    for (const clientSecret of secrets) {
+      const verdict = await probeAgyOAuthClient({ clientId, clientSecret, tokenUrl });
+      if (verdict === 'unknown') {
+        throw new Error(`Could not verify the agy OAuth client (the token endpoint gave no clear answer); ${fix}`);
+      }
+      if (verdict === 'valid') accepted.push({ clientId, clientSecret });
+    }
   }
-  return { clientId, clientSecret, source: 'binary' };
+  if (accepted.length !== 1) {
+    throw new Error(`${accepted.length === 0 ? 'None' : accepted.length} of ${ids.length * secrets.length} candidate `
+      + `OAuth client pairs${binaryPath ? ` in ${binaryPath}` : ''} were accepted by the token endpoint; not guessing — ${fix}`);
+  }
+  return { ...accepted[0], source: 'probe' };
 }
 
 /** Google OAuth refresh (form body). `invalid_grant` is the terminal verdict. */
@@ -208,6 +257,8 @@ export async function refreshAgyAccessToken(refreshToken, {
     try { code = JSON.parse(raw)?.error ?? null; } catch { /* non-JSON error body */ }
     const error = new Error(`Antigravity token refresh failed (${response.status}${typeof code === 'string' ? ` ${code}` : ''})`);
     error.terminalAuthentication = code === 'invalid_grant';
+    // The OAuth client (not the account) was refused: re-resolve the client.
+    error.invalidClient = code === 'invalid_client';
     throw error;
   }
   const data = await response.json();

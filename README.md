@@ -452,8 +452,12 @@ one `loadCodeAssist` call and warn when the account has no paid tier. A
 re-import of the same Google account updates it in place. Removing an account
 never revokes its Google grant (your local agy login may be the same account).
 The OAuth client used for token refresh is read from the installed `agy` binary
-and cached in the config; set `agyOAuthClientId` / `agyOAuthClientSecret` there
-if the binary cannot be found.
+and cached in the config. The binary holds more than one candidate secret, so
+each is checked against Google's token endpoint with a bogus refresh token: the
+right client answers `invalid_grant`, a wrong one `invalid_client` (nothing is
+issued). If a cached client is ever refused later, it is re-checked the same way
+and the account is not blamed. When no single candidate passes, set
+`agyOAuthClientId` / `agyOAuthClientSecret` in the config yourself.
 
 Quota comes from each account's quota summary, polled at startup, every 10
 minutes, and after use (disabled or parked accounts are not polled). Gemini models and Claude/GPT models have separate 5-hour

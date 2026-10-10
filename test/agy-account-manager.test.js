@@ -195,3 +195,85 @@ test('invalid_grant parks the agy account; a transient refresh failure does not'
     server.close();
   }
 });
+
+// Runtime-assembled fake secrets (public repository).
+const RIGHT_SECRET = ['GOCSPX', 'R'.repeat(28)].join('-');
+const WRONG_SECRET = ['GOCSPX', 'D'.repeat(28)].join('-');
+
+test('a cached secret refused with invalid_client is re-resolved once and the refresh succeeds; the account stays healthy', async () => {
+  const { server, requests, url } = await tokenEndpoint((res, form) => {
+    if (form.client_secret !== RIGHT_SECRET) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end('{"error":"invalid_client","error_description":"Unauthorized"}');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ access_token: `ya29.${form.refresh_token}`, expires_in: 3599 }));
+  });
+  try {
+    const manager = new AccountManager([
+      agyAccount('a', { expiresAt: Date.now() - 1000 }),
+      agyAccount('b', { expiresAt: Date.now() - 1000 }),
+    ], 0.98, 0);
+    manager.agyOAuth = { clientId: 'fake-client', clientSecret: WRONG_SECRET, tokenUrl: url };
+    const rejected = [];
+    manager.agyOAuthRecover = async secret => {
+      rejected.push(secret);
+      return { clientId: 'fake-client', clientSecret: RIGHT_SECRET, tokenUrl: url };
+    };
+
+    await Promise.all(manager.accounts.map(account => manager.ensureTokenFresh(account)));
+
+    assert.deepEqual(rejected, [WRONG_SECRET], 're-resolved once, not once per account');
+    assert.equal(manager.agyOAuth.clientSecret, RIGHT_SECRET);
+    for (const account of manager.accounts) {
+      assert.equal(account.status, 'active');
+      assert.equal(account.credential, `ya29.refresh-${account.name}`);
+    }
+    assert.equal(requests.filter(request => request.form.client_secret === RIGHT_SECRET).length, 2);
+  } finally {
+    server.close();
+  }
+});
+
+test('a client that stays refused fails only the refresh: no auth-revoked park, a lapsed token is a healable refresh-failed', async () => {
+  const { server, url } = await tokenEndpoint(res => {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end('{"error":"invalid_client"}');
+  });
+  try {
+    let recoveries = 0;
+    const manager = new AccountManager([
+      agyAccount('valid', { expiresAt: Date.now() + 60_000 }),
+      agyAccount('lapsed', { expiresAt: Date.now() - 1000 }),
+    ], 0.98, 0);
+    manager.agyOAuth = { clientId: 'fake-client', clientSecret: WRONG_SECRET, tokenUrl: url };
+    manager.agyOAuthRecover = async () => {
+      recoveries += 1;
+      throw new Error('None of 2 candidate OAuth client pairs were accepted');
+    };
+    const [valid, lapsed] = manager.accounts;
+
+    await manager.ensureTokenFresh(valid);
+    assert.equal(valid.status, 'active', 'a still-valid token keeps serving');
+
+    await manager.ensureTokenFresh(lapsed);
+    assert.equal(lapsed.status, 'error');
+    assert.equal(lapsed.errorReason, 'refresh-failed', 'not auth-revoked: the client, not the account, was refused');
+    assert.equal(lapsed._errorFromRefresh, true, 'a later successful refresh heals it');
+    assert.equal(recoveries, 1, 'a failed re-resolve pauses further attempts');
+
+    // Fixed client (e.g. agyOAuthClientSecret set by hand): the next refresh heals the account.
+    manager.agyOAuth = { clientId: 'fake-client', clientSecret: RIGHT_SECRET, tokenUrl: url };
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ access_token: 'ya29.healed', expires_in: 3599 }));
+    });
+    await manager.ensureTokenFresh(lapsed);
+    assert.equal(lapsed.status, 'active');
+    assert.equal(lapsed.credential, 'ya29.healed');
+  } finally {
+    server.close();
+  }
+});
