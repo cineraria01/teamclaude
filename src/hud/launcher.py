@@ -117,6 +117,11 @@ def launch(arguments):
         run("set-option", "-t", session, "mouse", "on")
         run("bind-key", "-n", "S-Enter", "send-keys", newline)
         run("set-window-option", "-t", session, "pane-border-style", "fg=colour238")
+        # The terminal tab shows the CLI's own title instead of the launcher process (Python). A pane without a
+        # title of its own (the footer, or the CLI before it sets one) shows the window name: Claude, Codex, agy.
+        run("set-option", "-t", session, "set-titles", "on")
+        run("set-option", "-t", session, "set-titles-string",
+            "#{?#{==:#{pane_title},#{host}},#{window_name},#{pane_title}}")
         footer = run("split-window", "-d", "-P", "-F", "#{pane_id}", "-v", "-l", str(rows), "-t", top,
                      sys.executable, str(statusline), "--watch", *(["--codex-pane", top] if mode == "codex" else ["--" + mode]))
         for event in ("client-attached", "client-resized"):
