@@ -16,10 +16,13 @@ language of its file.
 | [`runbooks/`](runbooks/) | Symptom-first operational procedures. Read-only diagnosis first, recovery second, prevention last |
 | [`evidence/`](evidence/) | Frozen excerpts with source SHA-256 hashes, so an independent reviewer can check a claim without pulling whole files into a review bundle |
 | [`assets/`](assets/) | Images referenced by the READMEs (hero, dashboard screenshot, footer preview) |
+| [`reference/`](reference/) | `upstream-README.md`: the upstream (sangrokjung/teamclaude) English README, kept as a detailed reference. Moved here 2026-10-10 when the root README was rewritten for teamproxy |
 | [`install/`](install/) | New-machine install guide for all three pools and both status lines (`INSTALL-ALL.md`, Korean), Codex/agy footer (`HUD.md`), proxy setup (`SETUP.md`). Moved here 2026-10-10 from the former `cineraria01/teamcodex` repo |
 
-Operational context for the production deployment is summarized in the
-[README's Operations section](../README.md#operations).
+Operational context for the upstream production deployment is summarized in the
+[upstream README copy's Operations section](reference/upstream-README.md#operations).
+Day-to-day operation of this fork's three pools is in the
+[root README](../README.md#서버-운영) (Korean).
 
 ## Runbooks
 
