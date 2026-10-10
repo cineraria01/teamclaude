@@ -1,5 +1,6 @@
 import { refreshAccessToken, isTokenExpiringSoon, normalizeExpiresAt } from './oauth.js';
 import { refreshCodexAccessToken } from './codex.js';
+import { agyModelGroup, refreshAgyAccessToken } from './agy.js';
 import { parseCodexResetCreditsAvailable, withinCodexResetCreditGrace } from './codex-reset-credits.js';
 import {
   cancellationIsDue,
@@ -155,6 +156,7 @@ export class AccountManager {
       accountId: acct.accountId || null,
       planType: acct.planType || null,
       expiresAt: acct.expiresAt || null,
+      ...(provider === 'agy' ? { projectId: acct.projectId || null } : {}),
       status: organizationDisabled || subscriptionEnded ? 'error' : 'active',
       subscriptionDisabled: organizationDisabled ? true : undefined,
       subscriptionCancellation: subscriptionCancellation || undefined,
@@ -697,7 +699,7 @@ export class AccountManager {
       const pa = this._priority(a);
       const pb = this._priority(b);
       if (pa !== pb) return pa - pb;                                     // explicit priority first (lower = preferred)
-      return this.autoCompare(a, b);                                     // then the automatic use-or-lose order
+      return this.autoCompare(a, b, model);                              // then the automatic use-or-lose order
     });
 
     // Accounts tied for the best rank (notably all-unknown at cold start, or all
@@ -705,14 +707,14 @@ export class AccountManager {
     // pinning to the lowest index, so a startup burst can't pile onto one account
     // before quotas are known.
     const p0 = this._priority(eligible[0]);
-    const w0 = this._weeklyResetTime(eligible[0]);
-    const r0 = this._sessionResetTime(eligible[0]);
-    const u0 = this._sessionUtilization(eligible[0]);
+    const w0 = this._weeklyResetTime(eligible[0], model);
+    const r0 = this._sessionResetTime(eligible[0], model);
+    const u0 = this._sessionUtilization(eligible[0], model);
     const tied = eligible
       .filter(a => this._priority(a) === p0
-        && this._weeklyResetTime(a) === w0
-        && this._sessionResetTime(a) === r0
-        && this._sessionUtilization(a) === u0)
+        && this._weeklyResetTime(a, model) === w0
+        && this._sessionResetTime(a, model) === r0
+        && this._sessionUtilization(a, model) === u0)
       .sort((a, b) => a.index - b.index);
     if (tied.length <= 1) return eligible[0];
     return tied.find(a => a.index > this.currentIndex) || tied[0];
@@ -737,14 +739,30 @@ export class AccountManager {
    * stable sort keeps ties in array order (the pre-weekly behavior for API-key
    * fleets and unmeasured accounts).
    */
-  autoCompare(a, b) {
-    const wa = this._weeklyResetTime(a);
-    const wb = this._weeklyResetTime(b);
+  autoCompare(a, b, model = null) {
+    const wa = this._weeklyResetTime(a, model);
+    const wb = this._weeklyResetTime(b, model);
     if (wa !== wb) return wa - wb;
-    const ra = this._sessionResetTime(a);
-    const rb = this._sessionResetTime(b);
+    const ra = this._sessionResetTime(a, model);
+    const rb = this._sessionResetTime(b, model);
     if (ra !== rb) return ra - rb;
-    return this._sessionUtilization(a) - this._sessionUtilization(b);
+    return this._sessionUtilization(a, model) - this._sessionUtilization(b, model);
+  }
+
+  /**
+   * Quota windows that order `account` for a request on `model`. Everything
+   * uses the unified meters, except an agy request for the "3p" group, which
+   * orders by that group's own 5h/weekly buckets (unified mirrors "gemini").
+   */
+  _orderQuota(account, model = null) {
+    if (account.provider !== 'agy' || agyModelGroup(model) !== '3p') return account.quota;
+    const group = account.quota.agyGroups?.['3p'];
+    return {
+      unified5h: group?.fiveHour?.utilization ?? null,
+      unified5hReset: group?.fiveHour?.reset ?? null,
+      unified7d: group?.weekly?.utilization ?? null,
+      unified7dReset: group?.weekly?.reset ?? null,
+    };
   }
 
   /**
@@ -764,8 +782,8 @@ export class AccountManager {
    * this just makes ORDERING (selection and the TUI display, which has no
    * sweep) reflect the rollover instantly.
    */
-  _weeklyResetTime(account) {
-    const q = account.quota;
+  _weeklyResetTime(account, model = null) {
+    const q = this._orderQuota(account, model);
     const r = (q.unified7d != null && q.unified7dReset) ? q.unified7dReset : Infinity;
     return r > Date.now() ? r : Infinity;
   }
@@ -775,16 +793,16 @@ export class AccountManager {
    * Expired timestamps rank at Infinity for the same rollover reason as
    * _weeklyResetTime above.
    */
-  _sessionResetTime(account) {
-    const q = account.quota;
+  _sessionResetTime(account, model = null) {
+    const q = this._orderQuota(account, model);
     const r = q.unified5hReset
       || (q.resetsAt ? new Date(q.resetsAt).getTime() : Infinity);
     return r > Date.now() ? r : Infinity;
   }
 
   /** Session utilization 0–1: unified 5h (Max) → standard token/request usage → 0. */
-  _sessionUtilization(account) {
-    const q = account.quota;
+  _sessionUtilization(account, model = null) {
+    const q = this._orderQuota(account, model);
     if (q.unified5h != null) return q.unified5h;
     if (q.tokensLimit != null && q.tokensRemaining != null) {
       return 1 - q.tokensRemaining / q.tokensLimit;
@@ -810,6 +828,10 @@ export class AccountManager {
 
   /** True once we have any quota data for this account (rate-limit headers seen). */
   _isMeasured(account) {
+    // agy: quota comes from the summary poll, never from response headers, and
+    // the account carries server-side session state — so no warm-up hopping,
+    // no unmeasured rebalance; affinity applies from the first request.
+    if (account.provider === 'agy') return true;
     const q = account.quota;
     return q.unified5h != null || q.unified7d != null
       || q.tokensLimit != null || q.requestsLimit != null;
@@ -1067,6 +1089,16 @@ export class AccountManager {
         account._mwProbes = 0;
       }
     }
+    for (const group of Object.values(q.agyGroups || {})) {
+      for (const window of [group?.fiveHour, group?.weekly]) {
+        if (window?.reset && now >= window.reset) {
+          window.utilization = null;
+          window.reset = null;
+        }
+      }
+    }
+
+    if (account.provider === 'agy') return this._isAgyGroupNear(account, agyModelGroup(model), now);
 
     if (this._isModelNearQuota(account, model, now)) return true;
 
@@ -1113,6 +1145,21 @@ export class AccountManager {
     }
 
     return false;
+  }
+
+  /**
+   * agy: is this account unable to serve `group` now? A request without a
+   * model (loadCodeAssist, fetchAvailableModels, …) has no group and is never
+   * quota-gated, so agy can always read the pool's tier and quota.
+   */
+  _isAgyGroupNear(account, group, now = Date.now()) {
+    if (!group) return false;
+    const entry = account.quota.agyGroups?.[group];
+    if (!entry) return false;
+    if (Number.isFinite(entry.blockedUntil) && entry.blockedUntil > now) return true;
+    return [entry.fiveHour, entry.weekly].some(window => window
+      && Number.isFinite(window.utilization) && window.utilization >= this.switchThreshold
+      && !(Number.isFinite(window.reset) && window.reset <= now));
   }
 
   _isModelNearQuota(account, model, now = Date.now()) {
@@ -1352,6 +1399,83 @@ export class AccountManager {
   }
 
   /**
+   * Fold a parsed agy `retrieveUserQuotaSummary` (agy.js parseAgyQuotaSummary)
+   * into the account. Both groups are kept; the "gemini" group is mirrored into
+   * the unified 5h/7d meters (status / TUI headline / ordering). With
+   * `exhaustedGroup` (a just-seen exhaustion 429) the group is blocked until
+   * its exhausted bucket resets — a bucket missing `remainingFraction` counts
+   * as exhausted there (proto3 omits zero).
+   */
+  updateAgyQuota(accountIndex, groups, exhaustedGroup = null) {
+    const account = this._resolve(accountIndex);
+    if (!account || !groups || typeof groups !== 'object') return false;
+    const now = Date.now();
+    const previous = account.quota.agyGroups || {};
+    const next = {};
+    for (const name of ['gemini', '3p']) {
+      const window = w => ({
+        utilization: Number.isFinite(w?.utilization) ? w.utilization : null,
+        reset: Number.isFinite(w?.reset) ? w.reset : null,
+      });
+      next[name] = {
+        fiveHour: window(groups[name]?.fiveHour),
+        weekly: window(groups[name]?.weekly),
+        blockedUntil: Number.isFinite(previous[name]?.blockedUntil) && previous[name].blockedUntil > now
+          ? previous[name].blockedUntil
+          : null,
+      };
+    }
+    const exhausted = next[exhaustedGroup];
+    if (exhausted) {
+      const resets = [exhausted.fiveHour, exhausted.weekly]
+        .filter(w => Number.isFinite(w.reset) && w.reset > now
+          && (w.utilization == null || w.utilization >= this.switchThreshold))
+        .map(w => w.reset);
+      if (resets.length) exhausted.blockedUntil = Math.max(...resets);
+    }
+    account.quota.agyGroups = next;
+    account.quota.agyQuotaAt = now;
+    account.quota.unified5h = next.gemini.fiveHour.utilization;
+    account.quota.unified5hReset = next.gemini.fiveHour.reset;
+    account.quota.unified7d = next.gemini.weekly.utilization;
+    account.quota.unified7dReset = next.gemini.weekly.reset;
+    return true;
+  }
+
+  /** agy exhaustion 429: keep (account, group) out of selection for `ms`. Other groups stay routable. */
+  blockAgyGroup(accountIndex, group, ms) {
+    const account = this._resolve(accountIndex);
+    if (!account || (group !== 'gemini' && group !== '3p')) return;
+    const groups = account.quota.agyGroups || (account.quota.agyGroups = {});
+    const entry = groups[group] || (groups[group] = {
+      fiveHour: { utilization: null, reset: null },
+      weekly: { utilization: null, reset: null },
+      blockedUntil: null,
+    });
+    entry.blockedUntil = Math.max(entry.blockedUntil || 0, Date.now() + ms);
+    console.log(`[TeamAgy] Account "${account.name}" ${group} quota exhausted — out of rotation for that group until ${new Date(entry.blockedUntil).toISOString()}`);
+  }
+
+  /** agy: ms until some enabled, un-parked account can serve `model`'s group again (null when unknown). */
+  agyRecoveryMs(model) {
+    const group = agyModelGroup(model);
+    if (!group) return null;
+    const now = Date.now();
+    let soonest = Infinity;
+    for (const account of this.accounts) {
+      if (account.enabled === false || account.status === 'error') continue;
+      const entry = account.quota.agyGroups?.[group];
+      let freeAt = Number.isFinite(entry?.blockedUntil) ? entry.blockedUntil : 0;
+      for (const window of [entry?.fiveHour, entry?.weekly]) {
+        if (Number.isFinite(window?.utilization) && window.utilization >= this.switchThreshold
+            && Number.isFinite(window.reset)) freeAt = Math.max(freeAt, window.reset);
+      }
+      if (freeAt > now) soonest = Math.min(soonest, freeAt - now);
+    }
+    return soonest === Infinity ? null : soonest;
+  }
+
+  /**
    * Update cumulative token usage from response body data.
    */
   updateUsage(accountIndex, inputTokens, outputTokens) {
@@ -1433,7 +1557,9 @@ export class AccountManager {
       try {
         const newTokens = account.provider === 'codex'
           ? await refreshCodexAccessToken(account.refreshToken)
-          : await refreshAccessToken(account.refreshToken);
+          : account.provider === 'agy'
+            ? await refreshAgyAccessToken(account.refreshToken, this.agyOAuth || {})
+            : await refreshAccessToken(account.refreshToken);
         // Another live sync may have installed a newer rotated token while this
         // network request was in flight. Never let the late result from the old
         // refresh token replace that newer credential.
@@ -1478,7 +1604,7 @@ export class AccountManager {
         // an account already parked by the request path as refresh-caused.
         const accessTokenExpired = !account.expiresAt
           || Date.now() >= normalizeExpiresAt(account.expiresAt);
-        const terminalAuthentication = account.provider === 'codex'
+        const terminalAuthentication = account.provider === 'codex' || account.provider === 'agy'
           ? err?.terminalAuthentication === true
           : accessTokenExpired;
         if (terminalAuthentication) {
@@ -1800,6 +1926,7 @@ export class AccountManager {
       accountId: acctData.accountId || null,
       planType: acctData.planType || null,
       expiresAt: acctData.expiresAt || null,
+      ...(provider === 'agy' ? { projectId: acctData.projectId || null } : {}),
       status: organizationDisabled || subscriptionEnded ? 'error' : 'active',
       subscriptionDisabled: organizationDisabled ? true : undefined,
       subscriptionCancellation: subscriptionCancellation || undefined,
@@ -2015,7 +2142,7 @@ export class AccountManager {
       && account.status === 'active'
       && !throttled
       && !this._isCapacityCooling(account)
-      && !this._isNearQuota(account);
+      && !this._isNearQuota(account, account.provider === 'agy' ? 'gemini' : null);
   }
 
   /**
@@ -2047,6 +2174,7 @@ export class AccountManager {
         ...a.quota,
         modelWeekly: Object.fromEntries(
           Object.entries(a.quota.modelWeekly).map(([k, w]) => [k, { ...w }])),
+        ...(a.quota.agyGroups ? { agyGroups: structuredClone(a.quota.agyGroups) } : {}),
       },
       usage: { ...a.usage },
       inflight: a.inflight,

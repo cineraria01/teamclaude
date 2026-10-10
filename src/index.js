@@ -66,6 +66,20 @@ import {
   unhealthyWorkerAction,
 } from './worker-health.js';
 import { installClaudeWrapper, uninstallClaudeWrapper } from './claude-wrapper.js';
+import {
+  AGY_DEFAULT_UPSTREAM,
+  agyCliNotFoundMessage,
+  buildAgyRunEnv,
+  loadAgyCodeAssist,
+  locateAgyBinary,
+  loginAgyCredentials,
+  parseAgyCredentials,
+  parseAgyStoredLogin,
+  readAgyKeychain,
+  refreshAgyAccessToken,
+  resolveAgyBin,
+  resolveAgyOAuthClient,
+} from './agy.js';
 
 const SUPERVISED_WORKER_ENV = 'TEAMCLAUDE_SUPERVISED_WORKER';
 const SUPERVISOR_PID_ENV = 'TEAMCLAUDE_SUPERVISOR_PID';
@@ -165,12 +179,21 @@ function publicRequestCapacity(config, accounts = config.accounts || []) {
 }
 
 const args = process.argv.slice(2);
-const cliProvider = args[0] === 'codex' ? 'codex' : 'anthropic';
-if (cliProvider === 'codex') {
+const cliProvider = args[0] === 'codex' || args[0] === 'agy' ? args[0] : 'anthropic';
+if (cliProvider !== 'anthropic') {
   args.shift();
-  process.env.TEAMCLAUDE_PROVIDER = 'codex';
+  process.env.TEAMCLAUDE_PROVIDER = cliProvider;
 }
 const command = args[0];
+// Claude/Codex-only commands are not offered for the Antigravity pool.
+const AGY_UNSUPPORTED_COMMANDS = new Set([
+  'reauth', 'subscription', 'api', 'install-claude-wrapper', 'uninstall-claude-wrapper',
+]);
+if (cliProvider === 'agy' && AGY_UNSUPPORTED_COMMANDS.has(command)) {
+  console.error(`${command} is not available for the Antigravity (agy) pool.\n`);
+  showHelp();
+  process.exit(1);
+}
 
 switch (command) {
   case 'server':
@@ -313,7 +336,8 @@ async function superviseServerCommand() {
   // a clean, client-retryable `overloaded_error` SSE event instead of a
   // destroyed client socket ("Connection closed mid-response" in Claude Code,
   // which does NOT auto-retry a raw connection loss).
-  const streamRecovery = !isCodexMode(config) && config.streamRecovery !== false;
+  const streamRecovery = !isCodexMode(config) && !isAgyMode(config)
+    && config.streamRecovery !== false;
   const streamIdleTimeoutMs = Number.isFinite(config.streamIdleTimeoutMs)
       && config.streamIdleTimeoutMs > 0
     ? Math.floor(config.streamIdleTimeoutMs)
@@ -1028,7 +1052,9 @@ async function superviseServerCommand() {
       [SUPERVISOR_PID_ENV]: String(process.pid),
       [LIFECYCLE_ID_ENV]: lifecycleId,
     };
-    const child = fork(process.argv[1], ['server'], {
+    // The `agy` prefix keeps the worker in agy mode even under an entry point
+    // that clears TEAMCLAUDE_PROVIDER (src/teamclaude.js).
+    const child = fork(process.argv[1], isAgyMode(config) ? ['agy', 'server'] : ['server'], {
       env: childEnv,
       stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
     });
@@ -1332,7 +1358,9 @@ async function proxyWorkerCommand() {
   // isCodexMode): createProxyServer keys on config.provider, and a supervised
   // worker only carries the env var.
   if (!config.provider && isCodexMode(config)) config.provider = 'codex';
+  if (!config.provider && isAgyMode(config)) config.provider = 'agy';
   const codexMode = isCodexMode(config);
+  const agyMode = config.provider === 'agy';
 
   // --log-to <dir>
   const logTo = argValue('--log-to');
@@ -1344,6 +1372,9 @@ async function proxyWorkerCommand() {
     if (codexMode) {
       console.error('  teamcodex codex login      Isolated Codex OAuth login');
       console.error('  teamcodex codex import     Import the current Codex login');
+    } else if (agyMode) {
+      console.error('  teamcodex agy import       Import the local agy login (macOS keychain)');
+      console.error('  teamcodex agy login        Google sign-in for another account');
     } else {
       console.error('  teamcodex import           Import from Claude Code');
       console.error('  teamcodex login            OAuth login via browser');
@@ -1363,9 +1394,12 @@ async function proxyWorkerCommand() {
   // 5-minute periodic account re-switching. Require a finite number so a
   // malformed value (false, "", "abc", null, ...) falls back to the default
   // rather than silently disabling switching.
+  // agy keeps server-side state per account (trajectory ACLs, conversations),
+  // so its default never re-prioritizes on a timer: the account changes only
+  // when it cannot serve the request's quota group.
   const reevalIntervalMs = Number.isFinite(config.reevalIntervalMs)
     ? config.reevalIntervalMs
-    : 5 * 60 * 1000;
+    : agyMode ? 0 : 5 * 60 * 1000;
   // Default per-account concurrency cap (max simultaneous in-flight requests an
   // account handles before load spreads to the next account). A per-account
   // `maxConcurrent` overrides this. Must be a positive number, else default 3.
@@ -1378,6 +1412,7 @@ async function proxyWorkerCommand() {
     ? config.overflowQueueMaxDepth
     : 256;
   const accountManager = new AccountManager(accounts, threshold, reevalIntervalMs, maxConcurrentDefault, overflowQueueMaxDepth);
+  if (agyMode) accountManager.agyOAuth = await agyOAuthForServer(config);
 
   // Restore the last run's quota snapshot so a restart doesn't blank the
   // dashboard (quota otherwise lives only in memory and is re-learned from
@@ -1563,7 +1598,7 @@ async function proxyWorkerCommand() {
       const diskConfig = await accountManager.readAfterAccountFlagWrites(() => loadConfig());
       if (!diskConfig) return;
       await syncAccountsFromDisk(diskConfig, config, accountManager);
-      if (codexMode) await server.refreshQuotaAll();
+      if (codexMode || agyMode) await server.refreshQuotaAll();
       if (process.connected) {
         process.send({
           type: 'teamcodex:capacity',
@@ -1619,13 +1654,15 @@ async function proxyWorkerCommand() {
       const sep = '='.repeat(60);
       console.log('');
       console.log(sep);
-      console.log(codexMode ? '  TeamCodex Proxy' : '  TeamClaude Proxy');
+      console.log(codexMode ? '  TeamCodex Proxy' : agyMode ? '  TeamAgy Proxy' : '  TeamClaude Proxy');
       console.log(sep);
       console.log(`  Port:       ${port}`);
       console.log(`  Accounts:   ${accounts.length}`);
       console.log(`  Threshold:  ${(threshold * 100).toFixed(0)}%`);
       console.log(`  Continuity: ${config.continuityMode ? 'on' : 'OFF — fleet-wide exhaustion surfaces 429s to clients'}`);
-      console.log(`  Upstream:   ${config.upstream || (codexMode ? 'https://chatgpt.com/backend-api/codex' : 'https://api.anthropic.com')}`);
+      console.log(`  Upstream:   ${agyMode
+        ? config.agyUpstream || config.upstream || AGY_DEFAULT_UPSTREAM
+        : config.upstream || (codexMode ? 'https://chatgpt.com/backend-api/codex' : 'https://api.anthropic.com')}`);
       console.log('');
       accounts.forEach((a, i) => {
         console.log(`  [${i + 1}] ${a.name} (${a.type})`);
@@ -1633,10 +1670,14 @@ async function proxyWorkerCommand() {
       console.log('');
       console.log(codexMode
         ? '  Run Codex through proxy:   teamcodex codex run'
-        : '  Run Claude through proxy:  teamcodex run');
+        : agyMode
+          ? '  Run agy through proxy:     teamcodex agy run'
+          : '  Run Claude through proxy:  teamcodex run');
       console.log(codexMode
         ? '  Show env vars:             teamcodex codex env'
-        : '  Show env vars:             teamcodex env');
+        : agyMode
+          ? '  Show env vars:             teamcodex agy env'
+          : '  Show env vars:             teamcodex env');
       console.log(sep);
       console.log('');
     }
@@ -1910,7 +1951,7 @@ async function findRunningServer(
   return null;
 }
 
-async function ensureProxyRunning(config, maxWaitMs = 15_000) {
+async function ensureProxyRunning(config, maxWaitMs = 15_000, serverArgs = ['server']) {
   const running = await findRunningServer(config);
   if (running) return running;
 
@@ -1919,7 +1960,7 @@ async function ensureProxyRunning(config, maxWaitMs = 15_000) {
   delete daemonEnv[SUPERVISED_WORKER_ENV];
   delete daemonEnv[SUPERVISOR_PID_ENV];
   let launchError = null;
-  const daemon = spawn(process.execPath, [process.argv[1], 'server'], {
+  const daemon = spawn(process.execPath, [process.argv[1], ...serverArgs], {
     detached: true,
     env: daemonEnv,
     stdio: 'ignore',
@@ -2095,6 +2136,10 @@ async function restartCommand() {
 
 async function importCommand() {
   const config = await loadOrCreateConfig();
+  if (isAgyMode(config)) {
+    await agyImportCommand(config);
+    return;
+  }
   if (!config.provider && cliProvider === 'codex') config.provider = 'codex';
   const codexMode = isCodexMode(config);
 
@@ -2149,6 +2194,14 @@ async function importCommand() {
 
 async function loginCommand() {
   const config = await loadOrCreateConfig();
+  if (isAgyMode(config)) {
+    if (args.includes('--api')) {
+      console.error('The Antigravity pool supports Google OAuth accounts only.');
+      process.exit(1);
+    }
+    await agyLoginCommand(config);
+    return;
+  }
   if (!config.provider && cliProvider === 'codex') config.provider = 'codex';
   if (isCodexMode(config)) {
     if (args.includes('--api')) {
@@ -2357,6 +2410,11 @@ async function codexSubscriptionCommand() {
 
 async function envCommand() {
   const config = await loadOrCreateConfig();
+  if (isAgyMode(config)) {
+    const running = await findRunningServer(config);
+    console.log(`export CLOUD_CODE_URL=http://127.0.0.1:${running?.port || config.proxy.port}`);
+    return;
+  }
   if (isCodexMode(config)) {
     console.log('teamcodex codex run');
     return;
@@ -2647,6 +2705,7 @@ async function codexResumeCommand() {
 }
 
 async function runCommand(clientArgsOverride = null) {
+  if (isAgyMode(null)) return agyRunCommand();
   if (cliProvider !== 'codex' && process.env.TEAMCLAUDE_SESSION_SUPERVISED === '1') {
     console.error(
       '[TeamClaude] Refusing nested supervised Claude launch: TEAMCLAUDE_CLAUDE_BIN must point to the native Claude vendor binary.',
@@ -2654,6 +2713,7 @@ async function runCommand(clientArgsOverride = null) {
     process.exit(75);
   }
   const config = await loadOrCreateConfig();
+  if (isAgyMode(config)) return agyRunCommand(config);
   let runtimeConfig = isCodexMode(config)
     ? config
     : { ...config, proxy: { ...config.proxy } };
@@ -2931,6 +2991,17 @@ async function statusCommand() {
           line += `    ${name}: ${(w.utilization * 100).toFixed(1)}% used`;
         }
         console.log(line);
+        // agy: the line above is the Gemini group; the Claude/GPT group has
+        // its own 5h/weekly limits. A group blocked by an exhaustion 429 says so.
+        if (acct.provider === 'agy' && q.agyGroups) {
+          const pct = w => (w?.utilization != null ? `${(w.utilization * 100).toFixed(1)}%` : '-');
+          const g3 = q.agyGroups['3p'];
+          console.log(`    Claude/GPT: session ${pct(g3?.fiveHour)} used    weekly ${pct(g3?.weekly)} used`);
+          for (const [group, label] of [['gemini', 'Gemini'], ['3p', 'Claude/GPT']]) {
+            const until = q.agyGroups[group]?.blockedUntil;
+            if (until > Date.now()) console.log(`    ${label} blocked until ${new Date(until).toISOString()}`);
+          }
+        }
         // Codex reset credits ("Full reset" grants). Guarded with != null so a
         // status from an older server (no field) prints nothing extra.
         if (q.codexResetCredits != null) {
@@ -3017,7 +3088,7 @@ async function accountsCommand() {
     // rotate the same refresh token concurrently.
     config = await atomicConfigUpdate(async cfg => {
       await Promise.all(cfg.accounts.map(async account => {
-        if (account.type !== 'oauth' || !account.refreshToken
+        if (account.type !== 'oauth' || !account.refreshToken || account.provider === 'agy'
           || !isTokenExpiringSoon(account.expiresAt)) return;
         try {
           const newTokens = account.provider === 'codex'
@@ -3041,6 +3112,9 @@ async function accountsCommand() {
           provider: 'codex',
         };
       }
+      if (a.provider === 'agy') {
+        return { accountUuid: a.accountUuid || null, email: a.email || null, provider: 'agy' };
+      }
       // The running worker owns token rotation. Sending an already-expired token
       // directly here is both useless and misleading; status remains visible via
       // `teamcodex status` while the worker refreshes on real traffic.
@@ -3059,7 +3133,9 @@ async function accountsCommand() {
       accessToken: account.accessToken,
       refreshToken: account.refreshToken,
       accountUuid: profile.accountUuid,
-      name: account.provider !== 'codex' && profile.email ? profile.email : account.name,
+      name: account.provider !== 'codex' && account.provider !== 'agy' && profile.email
+        ? profile.email
+        : account.name,
     }];
   });
 
@@ -3079,7 +3155,7 @@ async function accountsCommand() {
         // Update stored UUID and name from profile
         if (profiles[i] && !profiles[i].error) {
           a.accountUuid = profiles[i].accountUuid;
-          if (a.provider !== 'codex' && profiles[i].email) a.name = profiles[i].email;
+          if (a.provider !== 'codex' && a.provider !== 'agy' && profiles[i].email) a.name = profiles[i].email;
         }
       }
     }
@@ -3123,6 +3199,13 @@ async function accountsCommand() {
 
     // OAuth account
     const hasProfile = p && !p.error;
+    if (a.provider === 'agy') {
+      const src = a.source ? `, ${a.source}` : '';
+      console.log(`  [${i + 1}] ${a.name} (Antigravity ${a.tierId || 'tier unknown'}${src})`);
+      if (a.email && a.email !== a.name) console.log(`       Email: ${a.email}`);
+      if (verbose && a.expiresAt) printTokenExpiry(a.expiresAt);
+      continue;
+    }
     if (a.provider === 'codex') {
       const plan = p?.planType || a.planType || 'subscription';
       const src = a.source ? `, ${a.source}` : '';
@@ -3418,6 +3501,41 @@ async function uninstallClaudeWrapperCommand() {
 // ── help ────────────────────────────────────────────────────
 
 function showHelp() {
+  if (cliProvider === 'agy') {
+    console.log(`TeamAgy - Multi-account Antigravity (agy) proxy
+
+Usage: teamcodex agy [command] [options]
+
+Commands:
+  server              Start the Antigravity proxy server (default port 3458)
+  stop                Stop the running proxy
+  restart             Restart the proxy
+  import              Import the local agy login (macOS keychain)
+  import --file PATH  Import the same login JSON from a file
+  login               Add another account with a Google sign-in in the browser
+  run [-- args...]    Run agy through the proxy (starts the proxy if needed)
+  env                 Print the CLOUD_CODE_URL to use with agy
+  status              Show proxy & account status
+  reload              Re-read every account's quota summary now, then show status
+  accounts            List configured accounts
+  remove <name>       Remove an account (its Google grant is not revoked)
+  disable <name>      Disable an account
+  enable <name>       Re-enable an account
+  priority <name> <n> Set selection priority ("auto" clears it)
+  help                Show this help
+
+agy itself must be signed in once (run \`agy\` and log in); the proxy replaces
+its credentials with the pool account's on every call.
+
+Options:
+  --name NAME         Set account name (import/login)
+  --file PATH         Login JSON to import instead of the keychain (import)
+  --log-to DIR        Log full requests/responses to DIR
+
+Config: ${getConfigPath()}
+`);
+    return;
+  }
   if (cliProvider === 'codex') {
     console.log(`TeamCodex - Multi-account Codex subscription proxy
 
@@ -3582,6 +3700,186 @@ async function revokeReplacedCodexToken(previous, next, label) {
   }
 }
 
+// ── Antigravity (agy) ───────────────────────────────────────
+
+function agyUpstreamOf(config) {
+  return config?.agyUpstream || config?.upstream || AGY_DEFAULT_UPSTREAM;
+}
+
+/**
+ * The agy OAuth client (refresh / login): config override, else scanned from
+ * the agy binary once and cached in the 0600 config — never in the repository.
+ */
+async function ensureAgyOAuthClient(config, clientIdHint = null) {
+  const client = resolveAgyOAuthClient({ config, clientIdHint, binaryPath: locateAgyBinary() });
+  if (client.source !== 'config') {
+    await atomicConfigUpdate(cfg => {
+      cfg.agyOAuthClientId = client.clientId;
+      cfg.agyOAuthClientSecret = client.clientSecret;
+    });
+    config.agyOAuthClientId = client.clientId;
+    config.agyOAuthClientSecret = client.clientSecret;
+  }
+  return client;
+}
+
+async function agyOAuthForServer(config) {
+  const tokenUrl = config.agyTokenUrl || undefined;
+  try {
+    const { clientId, clientSecret } = await ensureAgyOAuthClient(config);
+    return { clientId, clientSecret, tokenUrl };
+  } catch (err) {
+    console.error(`[TeamAgy] ${err.message} Token refresh is unavailable until it is configured.`);
+    return { tokenUrl };
+  }
+}
+
+async function agyImportCommand(config) {
+  const file = argValue('--file');
+  let creds;
+  try {
+    let raw;
+    if (file) {
+      raw = readFileSync(file.replace(/^~(?=\/|$)/, homedir()), 'utf8');
+    } else {
+      const securityBin = process.env.TEAMAGY_SECURITY_BIN || undefined;
+      if (process.platform !== 'darwin' && !securityBin) {
+        throw new Error('keychain import is macOS-only; export the login JSON and use --file <path>');
+      }
+      raw = readAgyKeychain({ securityBin });
+    }
+    creds = parseAgyCredentials(parseAgyStoredLogin(raw));
+  } catch (err) {
+    console.error(`[TeamAgy] Import failed: ${err.message}`);
+    process.exit(1);
+  }
+  await upsertAgyAccount(config, argValue('--name'), creds, file ? 'file' : 'keychain');
+}
+
+async function agyLoginCommand(config) {
+  try {
+    const { clientId, clientSecret } = await ensureAgyOAuthClient(config);
+    const creds = await loginAgyCredentials({
+      clientId,
+      clientSecret,
+      authUrl: config.agyAuthUrl || undefined,
+      tokenUrl: config.agyTokenUrl || undefined,
+    });
+    await upsertAgyAccount(config, argValue('--name'), creds, 'login');
+  } catch (err) {
+    console.error(`[TeamAgy] ${err.message}`);
+    process.exit(1);
+  }
+}
+
+async function agyRunCommand(config = null) {
+  config ??= await loadOrCreateConfig();
+  if (!Array.isArray(config.accounts) || config.accounts.length === 0) {
+    console.error('[TeamAgy] No accounts configured. Add one first: teamcodex agy import (the local agy login) or teamcodex agy login.');
+    process.exit(1);
+  }
+  let running;
+  try {
+    // The `agy` prefix survives an entry point that clears TEAMCLAUDE_PROVIDER
+    // (src/teamclaude.js), so the auto-started server is the agy pool.
+    running = await ensureProxyRunning(config, 15_000, ['agy', 'server']);
+  } catch (err) {
+    console.error(`[TeamAgy] ${err.message}`);
+    process.exit(1);
+  }
+  const clientArgs = args.slice(1);
+  if (clientArgs[0] === '--') clientArgs.shift();
+  const agyBin = resolveAgyBin();
+  const result = spawnSync(agyBin, clientArgs, {
+    stdio: 'inherit',
+    env: buildAgyRunEnv(process.env, running.port),
+  });
+  if (result.error) {
+    console.error(result.error.code === 'ENOENT'
+      ? agyCliNotFoundMessage(agyBin)
+      : `Failed to start agy: ${result.error.message}`);
+    process.exit(1);
+  }
+  return propagateChildExit(result);
+}
+
+/**
+ * Add or update an agy account. Identity is the id_token `sub`: a re-import of
+ * the same Google account updates it in place (routing settings kept). Refresh
+ * tokens are never revoked here — the local agy login may be the same account.
+ */
+async function upsertAgyAccount(config, explicitName, creds, source) {
+  let client = null;
+  try {
+    client = await ensureAgyOAuthClient(config, creds.clientId);
+  } catch (err) {
+    console.error(`Warning: ${err.message} Token refresh will fail until it is set.`);
+  }
+  // A keychain copy may hold an expired access token; loadCodeAssist needs a live one.
+  if (client && isTokenExpiringSoon(creds.expiresAt)) {
+    try {
+      const fresh = await refreshAgyAccessToken(creds.refreshToken, {
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+        tokenUrl: config.agyTokenUrl || undefined,
+      });
+      creds = { ...creds, accessToken: fresh.accessToken, refreshToken: fresh.refreshToken, expiresAt: fresh.expiresAt };
+    } catch (err) {
+      console.error(`Warning: token refresh failed: ${err.message}`);
+    }
+  }
+  let assist = null;
+  try {
+    assist = await loadAgyCodeAssist(creds.accessToken, { upstream: agyUpstreamOf(config) });
+  } catch (err) {
+    console.error(`Warning: ${err.message} — tier and project unknown`);
+  }
+  if (assist && !assist.paid) {
+    console.error('Warning: this account has no paid tier (Google AI Pro/Ultra); its quota will be small.');
+  }
+  let name = explicitName || null;
+  let action = 'Added';
+  const savedConfig = await atomicConfigUpdate(cfg => {
+    let idx = cfg.accounts.findIndex(a => a.accountUuid === creds.accountUuid);
+    if (idx < 0 && name) idx = cfg.accounts.findIndex(a => a.name === name);
+    const previous = idx >= 0 ? cfg.accounts[idx] : null;
+    if (!name) name = previous?.accountUuid === creds.accountUuid ? previous.name : creds.email;
+    if (!name) {
+      let n = 1;
+      do { name = `agy-account-${n++}`; } while (cfg.accounts.some(a => a.name === name));
+    }
+    const account = {
+      name,
+      provider: 'agy',
+      type: 'oauth',
+      source,
+      accountUuid: creds.accountUuid,
+      accessToken: creds.accessToken,
+      refreshToken: creds.refreshToken,
+      idToken: creds.idToken,
+      expiresAt: creds.expiresAt,
+      email: creds.email,
+    };
+    const tierId = assist?.tierId || previous?.tierId;
+    const projectId = assist?.projectId || previous?.projectId;
+    if (tierId) account.tierId = tierId;
+    if (projectId) account.projectId = projectId;
+    if (previous) {
+      action = 'Updated';
+      if (previous.enabled !== undefined) account.enabled = previous.enabled;
+      if (previous.priority !== undefined) account.priority = previous.priority;
+      if (previous.maxConcurrent !== undefined) account.maxConcurrent = previous.maxConcurrent;
+      cfg.accounts[idx] = account;
+    } else {
+      cfg.accounts.push(account);
+    }
+    cfg.provider = 'agy';
+  });
+  console.log(`${action} Antigravity account "${name}"${assist?.tierId ? ` (${assist.tierId})` : ''}`);
+  console.log(`Saved to ${getConfigPath()}`);
+  await noteRunningServerReload(savedConfig);
+}
+
 async function upsertCodexAccount(name, creds, source = 'unknown') {
   if (!name) name = creds.email;
   let action = 'Added';
@@ -3721,6 +4019,7 @@ async function syncAccountsFromDisk(diskConfig, memConfig, accountManager) {
       if (typeof diskAcct.planType === 'string' && diskAcct.planType && mgr.planType !== diskAcct.planType) {
         mgr.planType = diskAcct.planType;
       }
+      if (mgr.provider === 'agy') mgr.projectId = diskAcct.projectId || null;
       // Mirror the applied state into the in-memory config copy too. Otherwise a
       // later TUI saveConfig (for any unrelated op) would spread the pre-sync
       // enabled/priority over the disk value and silently revert a CLI change.
@@ -3809,6 +4108,13 @@ function isCodexMode(config) {
   // anthropic semantics (stream recovery, auth headers, default upstream).
   return config?.provider === 'codex' || cliProvider === 'codex'
     || process.env.TEAMCLAUDE_PROVIDER === 'codex';
+}
+
+function isAgyMode(config) {
+  // Same three legs as isCodexMode: subcommand prefix, config, inherited env
+  // (the supervised worker only carries TEAMCLAUDE_PROVIDER).
+  return config?.provider === 'agy' || cliProvider === 'agy'
+    || process.env.TEAMCLAUDE_PROVIDER === 'agy';
 }
 
 async function resolveAccounts(config) {

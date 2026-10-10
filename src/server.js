@@ -47,6 +47,19 @@ import {
   hasClaudeRecoveryMarker,
   parseClaudeRecoveryAccount,
 } from './claude-auth.js';
+import {
+  AGY_DEFAULT_PROJECT,
+  AGY_DEFAULT_UPSTREAM,
+  AGY_DEFAULT_USER_AGENT,
+  AGY_EXHAUSTED_FALLBACK_MS,
+  agyAffinityKey,
+  agyExhaustedBody,
+  agyModelGroup,
+  classifyAgy429,
+  isAgyInferencePath,
+  parseAgyQuotaSummary,
+  rewriteAgyProject,
+} from './agy.js';
 
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -341,11 +354,15 @@ export function resolveAnthropicUsageUrl(configured, upstream) {
 }
 
 export function createProxyServer(accountManager, config, hooks = {}) {
-  const provider = config.provider === 'codex' ? 'codex' : 'anthropic';
+  const provider = config.provider === 'codex' || config.provider === 'agy'
+    ? config.provider
+    : 'anthropic';
   accountManager.singleActiveAccount = provider === 'codex';
-  const upstream = config.upstream || (provider === 'codex'
-    ? 'https://chatgpt.com/backend-api/codex'
-    : 'https://api.anthropic.com');
+  const upstream = provider === 'agy'
+    ? config.agyUpstream || config.upstream || AGY_DEFAULT_UPSTREAM
+    : config.upstream || (provider === 'codex'
+      ? 'https://chatgpt.com/backend-api/codex'
+      : 'https://api.anthropic.com');
   const hostTracker = createHostTracker(); // host CPU/RAM for /teamclaude/status
   const proxyApiKey = config.proxy?.apiKey;
   const logDir = config.logDir || null;
@@ -503,9 +520,11 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   // custom upstreams keep the probe-based warm-up.
   const anthropicUsageUrl = activeWarmup ? resolveAnthropicUsageUrl(config.oauthUsageUrl, upstream) : null;
   const codexUsageRefresh = provider === 'codex' && config.codexUsageRefresh !== false;
+  // agy polls a quota summary per account on this cadence — keep that
+  // proxy-originated traffic low by default.
   const warmupIntervalMs = Number.isFinite(config.warmupIntervalMs)
     ? Math.max(0, config.warmupIntervalMs)
-    : 5 * 60 * 1000;
+    : provider === 'agy' ? 10 * 60 * 1000 : 5 * 60 * 1000;
   // A structured organization-access 403 is authoritative for that moment,
   // but external billing/policy changes can restore the account later. Keep it
   // out of client rotation while periodically rechecking with the known-good
@@ -805,6 +824,106 @@ export function createProxyServer(accountManager, config, hooks = {}) {
       .then(() => refreshCodexAccount(account))
       .catch(() => { /* refreshCodexAccount is already best-effort */ })
       .finally(() => { account._usageRefreshing = false; });
+  }
+
+  // ── Antigravity (agy) quota ─────────────────────────────────────────────────
+  // agy reports no quota headers; each account's `retrieveUserQuotaSummary`
+  // (5h + weekly per model group) is polled at startup, every
+  // warmupIntervalMs, after a completed inference once the data is older than
+  // agyUsageActiveMs, and right after an exhaustion 429. Proxy-originated calls
+  // carry the latest real agy user-agent.
+  const agyQuotaRefresh = provider === 'agy' && config.agyQuotaRefresh !== false;
+  const agyUsageActiveMs = Number.isFinite(config.agyUsageActiveMs)
+    ? Math.max(0, config.agyUsageActiveMs)
+    : 120_000;
+  const agyAffinityKeys = new Map();
+  let agyUserAgent = null;
+  let agyRefreshPromise = null;
+
+  async function refreshAgyAccount(account, exhaustedGroup = null) {
+    if (warmupClosed || !account.credential) return false;
+    await accountManager.ensureTokenFresh(account).catch(() => { /* surfaces via status */ });
+    if (warmupClosed || accountManager.accounts[account.index] !== account) return false;
+    const probe = probeSignal();
+    try {
+      const res = await fetch(`${upstream.replace(/\/$/, '')}/v1internal:retrieveUserQuotaSummary`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${account.credential}`,
+          'content-type': 'application/json',
+          'user-agent': agyUserAgent || AGY_DEFAULT_USER_AGENT,
+        },
+        body: JSON.stringify({ project: account.projectId || AGY_DEFAULT_PROJECT }),
+        signal: probe.signal,
+      });
+      if (!res.ok) {
+        await res.body?.cancel();
+        return false;
+      }
+      const payload = await res.json();
+      if (accountManager.accounts[account.index] !== account) return false;
+      return accountManager.updateAgyQuota(account, parseAgyQuotaSummary(payload), exhaustedGroup);
+    } catch {
+      return false; // network / timeout / unparseable: data stays as it was
+    } finally {
+      probe.cleanup();
+    }
+  }
+
+  async function refreshAgyQuotaAll() {
+    if (!agyQuotaRefresh || warmupClosed) return -1;
+    if (agyRefreshPromise) return agyRefreshPromise;
+    agyRefreshPromise = (async () => {
+      const targets = accountManager.accounts.filter(a => a.provider === 'agy' && a.credential);
+      const outcomes = await Promise.all(targets.map(a => refreshAgyAccount(a)));
+      return { targets: targets.length, measured: outcomes.filter(Boolean).length };
+    })();
+    try {
+      return await agyRefreshPromise;
+    } finally {
+      agyRefreshPromise = null;
+    }
+  }
+
+  // Fire-and-forget, single-flight per account (never delays a response).
+  function refreshAgyInBackground(account, exhaustedGroup = null) {
+    if (!agyQuotaRefresh || warmupClosed || account?.provider !== 'agy' || account._usageRefreshing) return;
+    if (accountManager.accounts[account.index] !== account) return;
+    account._usageRefreshing = true;
+    refreshAgyAccount(account, exhaustedGroup)
+      .catch(() => { /* best-effort */ })
+      .finally(() => { account._usageRefreshing = false; });
+  }
+
+  function maybeRefreshAgyQuota(account) {
+    if (agyUsageActiveMs <= 0) return;
+    if (Date.now() - (account?.quota?.agyQuotaAt ?? 0) < agyUsageActiveMs) return;
+    refreshAgyInBackground(account);
+  }
+
+  // Exhaustion 429 on (account, group): block it at once so this request's
+  // failover skips it, then let the fresh summary say until when.
+  const agyExhausted = provider === 'agy'
+    ? (account, group, retryDelayMs) => {
+        accountManager.blockAgyGroup(account, group, retryDelayMs > 0 ? retryDelayMs : AGY_EXHAUSTED_FALLBACK_MS);
+        refreshAgyInBackground(account, group);
+      }
+    : null;
+
+  // String session key → stable object, so the socket-keyed affinity WeakMap
+  // can pin an agy trajectory/session regardless of which connection carries it.
+  function agyAffinityObject(key) {
+    let value = agyAffinityKeys.get(key);
+    if (value) {
+      agyAffinityKeys.delete(key);
+      agyAffinityKeys.set(key, value);
+      return value;
+    }
+    value = {};
+    agyAffinityKeys.set(key, value);
+    // ponytail: LRU of 1024 sessions; an evicted one just follows sticky selection.
+    if (agyAffinityKeys.size > 1024) agyAffinityKeys.delete(agyAffinityKeys.keys().next().value);
+    return value;
   }
 
   // Codex reset credits. One redemption attempt per account at a time; the
@@ -1152,6 +1271,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
   // is no known-accepted request shape to replay).
   async function refreshQuotaAll() {
     if (provider === 'codex') return refreshCodexQuotaAll();
+    if (provider === 'agy') return refreshAgyQuotaAll();
     if (!activeWarmup || warmupClosed || (!probeTemplate && !anthropicUsageUrl)) return -1;
     const targets = accountManager.accounts.filter(a =>
       (a.status !== 'error' || a.errorReason === 'subscription-disabled')
@@ -1301,6 +1421,14 @@ export function createProxyServer(accountManager, config, hooks = {}) {
     if (warmupIntervalMs > 0) {
       codexUsageTimer = setInterval(() => { refreshCodexQuotaAll(); }, warmupIntervalMs);
       codexUsageTimer.unref();
+    }
+  }
+  let agyQuotaTimer = null;
+  if (agyQuotaRefresh) {
+    setImmediate(() => { refreshAgyQuotaAll(); });
+    if (warmupIntervalMs > 0) {
+      agyQuotaTimer = setInterval(() => { refreshAgyQuotaAll(); }, warmupIntervalMs);
+      agyQuotaTimer.unref();
     }
   }
 
@@ -1841,6 +1969,13 @@ export function createProxyServer(accountManager, config, hooks = {}) {
           if (normalized.injected) byokStats.injected += 1;
         }
 
+        let agySessionKey = null;
+        if (provider === 'agy') {
+          const userAgent = req.headers['user-agent'];
+          if (typeof userAgent === 'string' && userAgent) agyUserAgent = userAgent;
+          if (sessionAffinity) agySessionKey = agyAffinityKey(req.url, body);
+        }
+
         // Track request
         const reqId = ++requestCounter;
         hooks.onRequestStart?.(reqId, { method: req.method, path: req.url });
@@ -1851,7 +1986,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
         // auth401 = accounts that answered 401 after their refresh chance (cascade
         // guard input + per-request exclusion); authParked = what THIS request parked,
         // kept so a cascade can put it back.
-        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), triedCapacity: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? req.socket : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs, resetCredits: resetCreditController, resetCreditAttempts: 0, resetCreditRetried: new Set(), resetCreditBackstopYielded: false };
+        const ctx = { account: null, status: null, model: null, provider, authRetried: new Set(), auth401: new Set(), authParked: [], authCascade: false, tried429: new Set(), tried5xx: new Set(), triedCapacity: new Set(), overloadRetries: 0, capacityWaits: 0, held: null, queueTimeoutMs, abortSignal: null, affinityKey: sessionAffinity ? (agySessionKey ? agyAffinityObject(agySessionKey) : req.socket) : null, preferredAccountUuid: recoveryAccountUuid, sawModelWeekly: false, byok: byokMatch != null, continuity, continuityDeadlineAt: null, failedFast: false, last429: null, modelFallbacks: config.modelFallbacks || null, fallbackQueue: undefined, streamRecovery, maxResponseBytes, reserveResponseBytes, releaseReservedResponseBytes, reserveAuxiliaryResponseBytes, releaseAuxiliaryResponseBytes, reserveLogResponseBytes, releaseLogResponseBytes, registerIdleLogReservation, upstreamResponseTimeoutMs, streamIdleTimeoutMs, streamTotalTimeoutMs, subscriptionRecheckIntervalMs, resetCredits: resetCreditController, resetCreditAttempts: 0, resetCreditRetried: new Set(), resetCreditBackstopYielded: false, agyExhausted };
         try {
           if (isStatusRequest) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1919,6 +2054,8 @@ export function createProxyServer(accountManager, config, hooks = {}) {
           // serving — AFTER the slot release so it can never hold capacity,
           // and fire-and-forget so it can never delay this response.
           if (servedAccount != null) maybeRefreshCodexUsage(servedAccount);
+          if (servedAccount != null && provider === 'agy' && isAgyInferencePath(req.url)
+              && ctx.status >= 200 && ctx.status < 300) maybeRefreshAgyQuota(servedAccount);
           hooks.onRequestEnd?.(reqId, {
             method: req.method, path: req.url,
             account: ctx.account, status: ctx.status,
@@ -1962,6 +2099,7 @@ export function createProxyServer(accountManager, config, hooks = {}) {
     if (warmupTimer) clearInterval(warmupTimer);
     if (subscriptionRecheckTimer) clearInterval(subscriptionRecheckTimer);
     if (codexUsageTimer) clearInterval(codexUsageTimer);
+    if (agyQuotaTimer) clearInterval(agyQuotaTimer);
   };
   const closeServer = server.close.bind(server);
   server.close = (cb) => { shutdownWarmup(); return closeServer(cb); };
@@ -2844,6 +2982,17 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
         return forwardRequest(req, res, fallback.body, accountManager, upstream, 0, hooks, reqId, ctx, logDir);
       }
     }
+    // agy: replay this request's own upstream 429 when it had one (agy renders
+    // it natively); otherwise answer in the same Google RPC shape.
+    if (ctx.provider === 'agy') {
+      if (sendSaved429(res, ctx)) return;
+      ctx.status = 429;
+      const waitMs = hasCapped(null) ? 1000 : accountManager.agyRecoveryMs(ctx.model) ?? 60_000;
+      const retryAfter = Math.max(1, Math.ceil(waitMs / 1000));
+      res.writeHead(429, { 'Content-Type': 'application/json', 'retry-after': String(retryAfter) });
+      res.end(JSON.stringify(agyExhaustedBody(retryAfter)));
+      return;
+    }
     const deadlineExpired = ctx.continuity.maxWaitMs > 0
       && ctx.continuityDeadlineAt != null
       && Date.now() >= ctx.continuityDeadlineAt;
@@ -2969,6 +3118,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     if (lk === 'chatgpt-account-id') continue;
     if (lk === CODEX_INVOCATION_HEADER) continue;
     if (lk === CODEX_ACTOR_AUTHORIZATION_HEADER) continue;
+    if (ctx.provider === 'agy' && (lk === 'x-goog-api-key' || lk === 'x-goog-user-project')) continue;
     // Strip accept-encoding: Node fetch auto-decompresses, which would
     // mismatch the Content-Encoding header we forward to the client
     if (lk === 'accept-encoding') continue;
@@ -2993,6 +3143,15 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
   const method = req.method;
   const replaySafe = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
   const metadataOnlyLog = ctx.provider === 'codex';
+  // agy: aim the body at the selected account's project. Per attempt, so a
+  // failover re-targets the next account; `body` itself stays the original.
+  let dispatchBody = body;
+  if (ctx.provider === 'agy') {
+    dispatchBody = rewriteAgyProject(body, account.projectId);
+    if (dispatchBody !== body && headers['content-length'] != null) {
+      headers['content-length'] = String(dispatchBody.length);
+    }
+  }
 
   // Build log sections
   const logSections = [];
@@ -3054,7 +3213,7 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
     const requestOptions = {
       method,
       headers,
-      body: ['GET', 'HEAD'].includes(method) ? undefined : body,
+      body: ['GET', 'HEAD'].includes(method) ? undefined : dispatchBody,
       signal: upstreamDeadline.signal,
     };
     const dispatchedAt = Date.now();
@@ -3386,6 +3545,66 @@ async function forwardRequest(req, res, body, accountManager, upstream, retryCou
       }
       if (!res.headersSent) res.writeHead(400, responseHeaders);
       res.end(responseBody.length > 0 ? responseBody : undefined);
+      return;
+    }
+
+    // agy 429. On an inference call it means this account's quota GROUP is
+    // spent: block (account, group), refresh its summary, fail over — the other
+    // group stays routable. MODEL_CAPACITY_* (or a model-less call) is Google
+    // capacity: bounded failover, no account state. With no alternative the
+    // upstream body passes through unchanged so agy renders its own message.
+    if (ctx.provider === 'agy' && upstreamRes.status === 429) {
+      const responseBody = await readBodyBounded(
+        upstreamRes.body,
+        ctx.maxResponseBytes,
+        ctx.reserveResponseBytes,
+        ctx.releaseReservedResponseBytes,
+      );
+      if (responseBody === null) {
+        ctx.status = 502;
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: { code: 502, message: 'Upstream 429 response exceeded the proxy limit.', status: 'UNAVAILABLE' },
+          }));
+        }
+        return;
+      }
+      const responseHeaders = {};
+      const responseConnectionHeaders = connectionHeaderNames(upstreamRes.headers.get('connection'));
+      for (const [key, value] of upstreamRes.headers.entries()) {
+        if (HOP_BY_HOP_HEADERS.has(key) || responseConnectionHeaders.has(key)) continue;
+        if (key === 'content-encoding' || key === 'content-length') continue;
+        responseHeaders[key] = value;
+      }
+      ctx.last429 = { body: responseBody, headers: responseHeaders };
+      const verdict = classifyAgy429(responseBody);
+      const group = agyModelGroup(ctx.model);
+      const exhausted = group != null && !verdict.capacity;
+      if (exhausted) ctx.agyExhausted?.(account, group, verdict.retryDelayMs);
+      ctx.tried429.add(account);
+      const canFailOver = !res.destroyed && retryCount < maxRetries
+        && (exhausted || ctx.tried429.size <= ctx.continuity.rateLimitFailovers)
+        && (hasUsable(ctx.tried429) || hasCapped(ctx.tried429));
+      if (canFailOver) {
+        console.log(exhausted
+          ? `[TeamAgy] 429 (${group} quota exhausted) on "${account.name}" — switching account`
+          : `[TeamAgy] 429 (${verdict.reason || 'capacity'}) on "${account.name}" — trying another account, not throttled`);
+        if (logDir) {
+          appendLogSection(`=== RESPONSE 429 — ${exhausted ? `${group} exhausted` : 'capacity'}, switching ===\n${formatHeaders(upstreamRes.headers, metadataOnlyLog)}`);
+          flushRequestLog(logDir, reqId, logSections, hooks);
+        }
+        releaseHeld();
+        return forwardRequest(req, res, body, accountManager, upstream, retryCount + 1, hooks, reqId, ctx, logDir);
+      }
+      console.log(`[TeamAgy] 429 on "${account.name}" — no other account can serve this, passing it through`);
+      if (logDir) {
+        appendLogSection(`=== RESPONSE 429 — passed through ===\n${formatHeaders(upstreamRes.headers, metadataOnlyLog)}`);
+        if (!metadataOnlyLog) appendLogSection(formatLogBody('=== RESPONSE BODY', responseBody));
+        flushRequestLog(logDir, reqId, logSections, hooks);
+      }
+      if (res.destroyed) return;
+      sendSaved429(res, ctx);
       return;
     }
 
