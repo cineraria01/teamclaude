@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -132,6 +132,49 @@ test('status lists healthy accounts with quota lines', async () => {
   assert.match(res.stdout, /Usable now:\s+2\/2 accounts/);
   assert.match(res.stdout, /Session:\s+10\.0% used\s+Weekly: 20\.0% used/);
   assert.match(res.stdout, /b@example\.com/);
+});
+
+test('reload and status finish when lsof hangs and ignores SIGTERM', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'teamclaude-lsof-timeout-'));
+  const bin = join(dir, 'bin');
+  await mkdir(bin);
+  await writeFile(join(bin, 'lsof'), `#!${process.execPath}
+process.on('SIGTERM', () => {});
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+  const payload = basePayload([account('idle')]);
+  let reloads = 0;
+  const proxy = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/teamclaude/reload') {
+      assert.equal(req.method, 'POST');
+      reloads += 1;
+      res.end(JSON.stringify({ targets: 1, measured: 1, total: 1 }));
+    } else {
+      res.end(JSON.stringify(payload));
+    }
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  const configPath = join(dir, 'config.json');
+  await writeFile(configPath, JSON.stringify({
+    provider: 'anthropic', proxy: { port: proxy.address().port, apiKey: 'k' }, accounts: [],
+  }));
+  const env = { ...process.env, TEAMCLAUDE_CONFIG: configPath, PATH: `${bin}:${process.env.PATH}` };
+  delete env.TEAMCLAUDE_PROVIDER;
+  try {
+    const result = await new Promise(resolve => {
+      execFile(process.execPath, [entry, 'reload'], { env, timeout: 8000 }, (err, stdout, stderr) =>
+        resolve({ err, stdout, stderr }));
+    });
+    assert.equal(result.err, null, result.stderr);
+    assert.equal(reloads, 1);
+    assert.match(result.stdout, /Re-measured 1\/1 account/);
+    assert.match(result.stdout, /Server:\s+running/);
+    assert.match(result.stdout, /idle/);
+  } finally {
+    await new Promise(resolve => proxy.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('status CLI requests the trusted local identity payload', async () => {

@@ -1917,10 +1917,16 @@ function configuredStatusProbeTimeoutMs(fallbackMs = 1500) {
 }
 
 /** Best-effort: the pid listening on a TCP port (macOS/Linux via lsof). */
-function lsofPid(port) {
+function lsofPid(port, candidatePid = null) {
   if (process.platform === 'win32') return null;
   try {
-    const r = spawnSync('lsof', ['-b', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+    const args = ['-b', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'];
+    if (Number.isSafeInteger(candidatePid) && candidatePid > 0) {
+      args.push('-a', '-p', String(candidatePid));
+    }
+    const r = spawnSync('lsof', args, {
+      encoding: 'utf8', timeout: 1000, killSignal: 'SIGKILL',
+    });
     if (r.status !== 0 || r.error || r.signal) return null;
     const output = (r.stdout || '').trim();
     if (!/^[1-9]\d*$/.test(output)) return null;
@@ -1965,7 +1971,8 @@ async function findRunningServer(
       port,
       Math.min(configuredStatusProbeTimeoutMs(), remainingMs),
     ))) continue;
-    const lsofOwnerPid = lsofPid(port);
+    const lsofOwnerPid = (state?.port === port && state.pid ? lsofPid(port, state.pid) : null)
+      || lsofPid(port);
     const ownerPid = lsofOwnerPid || (
       state?.port === port && state.pid && isPidAlive(state.pid) ? state.pid : null
     );
