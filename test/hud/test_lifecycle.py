@@ -52,6 +52,17 @@ def check():
             result = subprocess.run([sys.executable, str(HUD / "launcher.py"), "--agy", *arguments], env=env,
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
             assert json.loads(result.stdout) == ["run", "--", *arguments], (arguments, result.stdout, result.stderr)
+        # --yolo becomes each CLI's own skip-all-approvals flag; --keep-alive is ours wherever it sits.
+        for name in ("teamclaude", "teamcodex"):
+            (Path(directory) / name).write_text(fake.read_text())
+            (Path(directory) / name).chmod(0o755)
+        for pool, arguments, expected in (
+                ("--agy", ["--yolo", "-p", "hi"], ["--dangerously-skip-permissions", "-p", "hi"]),
+                ("--claude", ["-p", "hi", "--yolo"], ["-p", "hi", "--dangerously-skip-permissions"]),
+                (None, ["--yolo", "--keep-alive", "--version"], ["--dangerously-bypass-approvals-and-sandbox", "--version"])):
+            result = subprocess.run([sys.executable, str(HUD / "launcher.py"), *([pool] if pool else []), *arguments],
+                                    env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+            assert json.loads(result.stdout) == ["run", "--", *expected], (arguments, result.stdout, result.stderr)
     print("PASS: agy print mode and no terminal skip the footer")
     # A terminal too short for the footer starts the CLI alone instead of refusing.
     with tempfile.TemporaryDirectory(prefix="tcodex-test-") as directory:

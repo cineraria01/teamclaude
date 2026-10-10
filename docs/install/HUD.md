@@ -50,6 +50,12 @@ tmux 소켓은 `teamclaude-hud`입니다.
   1. lt-1                  active  Ses   0% 1h29m   Wk   0% 6d23h   Fbl      -       End       -
 ```
 
+### 세 명령 공통 `--yolo`
+
+`teamclaude --yolo`·`claude --yolo`·`teamcodex --yolo`·`teamagy --yolo`는 승인 없이 실행합니다(2026-10-10 사용자 요청 "--yolo 로 하자 3개모두").
+실행기가 Claude Code·agy에는 `--dangerously-skip-permissions`, Codex에는 `--dangerously-bypass-approvals-and-sandbox`로 바꿔 넘깁니다.
+인쇄 모드(`teamagy --yolo -p …`)에도 적용됩니다. `--keep-alive`도 이제 인자 어디에 두어도 됩니다.
+
 ### 세 하단 줄 공통 tmux 설정
 
 하단 줄 tmux 서버는 [`src/hud/tmux.conf`](../../src/hud/tmux.conf)로 뜹니다(평소 tmux 설정과 무관). Esc가 바로 CLI에 가고
