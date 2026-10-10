@@ -2,7 +2,7 @@
 
 2026-10-07부터 오너가 관리하는 모든 머신(로컬 맥, lucy, hanulchoi, njobclub, server-150·151)과
 UUP 상담 초안 워커의 Claude 풀은 같은 장기 토큰 5개(`lt-1`~`lt-5`)를 쓴다. 넣는 절차·스크립트는
-`cineraria01/tcodex`의 `docs/INSTALL-ALL.md` §2-1이 정본이고, 이 문서는 프록시가 그 계정을 어떻게
+`cineraria01/teamcodex`(옛 `tcodex`)의 `docs/INSTALL-ALL.md` §2-1이 정본이고, 이 문서는 프록시가 그 계정을 어떻게
 다루는지를 적는다.
 
 ## 왜 바꿨나
